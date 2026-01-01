@@ -1,0 +1,225 @@
+services:
+  dashboard:
+    build: ${DEFAULT_APPS_MOUNT}/home-server-dashboard
+    container_name: home_lab_dashboard
+    ports:
+      - "${DASHBOARD_PORT}:80"
+    restart: always
+
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: tailscale
+    hostname: homelab-server
+    network_mode: host
+    environment:
+      - TS_AUTHKEY=${TAILSCALE_AUTH_KEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=false
+      - TS_EXTRA_ARGS=--advertise-exit-node --advertise-routes=${DEFAULT_LAN_IP}/24
+    volumes:
+      - ${DEFAULT_APPS_MOUNT}/${TAILSCALE_FOLDER}:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    restart: always
+
+  plex:
+    image: lscr.io/linuxserver/plex:latest
+    container_name: plex
+    network_mode: host
+    environment:
+      - PUID=${DEFAULT_PUID}
+      - PGID=${DEFAULT_GUID}
+      - TZ=${DEFAULT_TIMEZONE}
+      - VERSION=docker
+      - ENABLE_HW_TRANSCODE=true
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility  
+    volumes:
+      - ${DEFAULT_APPS_MOUNT}/${PLEX_FOLDER}/config:/config
+      - ${DEFAULT_STORAGE_MOUNT}/${PLEX_FOLDER}/transcode:/transcode
+      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}:/data
+      - /dev/dri:/dev/dri                     
+    deploy: 
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    runtime: nvidia
+    restart: always
+
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    environment:
+      - PUID=${DEFAULT_PUID}
+      - PGID=${DEFAULT_GUID}
+      - TZ=${DEFAULT_TIMEZONE}
+      - WEBUI_PORT=${QBITTORRENT_UI_PORT}
+      - TORRENTING_PORT=${QBITTORRENT_TORRENTING_PORT}
+    volumes:
+      - ${DEFAULT_APPS_MOUNT}/${QBITTORRENT_FOLDER}/config:/config
+      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}:/${QBITTORRENT_DOWNLOADS_FOLDER} #optional
+    ports:
+      - "${QBITTORRENT_UI_PORT}:${QBITTORRENT_UI_PORT}"
+      - "${QBITTORRENT_TORRENTING_PORT}:${QBITTORRENT_TORRENTING_PORT}"
+      - "${QBITTORRENT_TORRENTING_PORT}:${QBITTORRENT_TORRENTING_PORT}/udp"
+
+  filebrowser:
+    image: filebrowser/filebrowser:s6
+    container_name: filebrowser
+    ports:
+      - "${FILEBROWSER_UI_PORT}:80"
+    volumes:
+      - ${DEFAULT_APPS_MOUNT}/${FILEBROWSER_FOLDER}/config:/config
+      - ${DEFAULT_STORAGE_MOUNT}/:/srv
+    restart: always
+    environment:
+      - PUID=${DEFAULT_PUID}
+      - PGID=${DEFAULT_GUID}
+
+  samba:
+    image: dockurr/samba
+    container_name: samba
+    environment:
+      NAME: "${SAMBA_SHARE_NAME}"
+      USER: "${SAMBA_USERNAME}"
+      PASS: "${SAMBA_PASSWORD}"
+      PUID: "${DEFAULT_PUID}"
+      PGID: "${DEFAULT_GUID}"
+    ports:
+      - "${SAMBA_PORT}:445"
+    volumes:
+      - ${DEFAULT_STORAGE_MOUNT}:/storage
+    restart: always
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    environment:
+      - PUID=${DEFAULT_PUID}
+      - PGID=${DEFAULT_GUID}
+      - TZ=${DEFAULT_TIMEZONE}
+    volumes:
+      - ${DEFAULT_APPS_MOUNT}/${SONARR_FOLDER}/config:/config
+      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/${QBITTORRENT_TV_FOLDER}:/${SONARR_TV_FOLDER}
+      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/${QBITTORRENT_MOVIES_FOLDER}:/${SONARR_MOVIES_FOLDER}
+      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/:/downloads
+    ports:
+      - "${SONARR_PORT}:8989"
+    restart: always
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    environment:
+      - PUID=${DEFAULT_PUID}
+      - PGID=${DEFAULT_GUID}
+      - TZ=${DEFAULT_TIMEZONE}
+    volumes:
+      - ${DEFAULT_APPS_MOUNT}/${RADARR_FOLDER}/config:/config
+      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/${QBITTORRENT_TV_FOLDER}:/${RADARR_TV_FOLDER}
+      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/${QBITTORRENT_MOVIES_FOLDER}:/${RADARR_MOVIES_FOLDER}
+      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/:/downloads
+    ports:
+        - "${RADARR_PORT}:7878"
+    restart: always
+
+  jackett:
+    image: lscr.io/linuxserver/jackett:latest
+    container_name: jackett
+    environment:
+      - PUID=${DEFAULT_PUID}
+      - PGID=${DEFAULT_GUID}
+      - TZ=${DEFAULT_TIMEZONE}
+    volumes:
+      - ${DEFAULT_APPS_MOUNT}/${JACKETT_FOLDER}/config:/config
+      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/${QBITTORRENT_TV_FOLDER}:/${JACKETT_TV_FOLDER}
+      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/${QBITTORRENT_MOVIES_FOLDER}:/${JACKETT_MOVIES_FOLDER}
+      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/:/downloads
+    ports:
+        - "${JACKETT_PORT}:9117"
+    restart: always
+
+  overseerr:
+    image: lscr.io/linuxserver/overseerr:latest
+    container_name: overseerr
+    environment:
+      - PUID=${DEFAULT_PUID}
+      - PGID=${DEFAULT_GUID}
+      - TZ=${DEFAULT_TIMEZONE}
+    volumes:
+      - ${DEFAULT_APPS_MOUNT}/${OVERSEERR_FOLDER}/config:/config
+      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/${QBITTORRENT_TV_FOLDER}:/${OVERSEERR_TV_FOLDER}
+      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/${QBITTORRENT_MOVIES_FOLDER}:/${OVERSEERR_MOVIES_FOLDER}
+      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/:/downloads
+    ports:
+        - "${OVERSEERR_PORT}:5055"
+    restart: always
+
+  pulsarr:
+    image: lakker/pulsarr:latest
+    container_name: pulsarr
+    ports:
+      - "3003:3003"
+    volumes:
+      - ${DEFAULT_APPS_MOUNT}/${PULSARR_FOLDER}/.env:/app/.env
+      - ${DEFAULT_STORAGE_MOUNT}/${PULSARR_FOLDER}/data:/app/data
+    restart: always
+    env_file:
+      - .env
+
+  maintainerr:
+      image: ghcr.io/maintainerr/maintainerr:latest
+      container_name: maintainerr
+      user: "${DEFAULT_PUID}:${DEFAULT_GUID}"
+      volumes:
+        - type: bind
+          source: ${DEFAULT_STORAGE_MOUNT}/${MAINTAINERR_FOLDER}/data
+          target: /opt/data
+      environment:
+        - TZ=${DEFAULT_TIMEZONE}
+      ports:
+        - "${MAINTAINERR_PORT}:6246"
+      restart: always
+
+  couchdb:
+    image: couchdb:latest
+    container_name: couchdb-for-ols
+    user: 5984:5984
+    environment:
+      - COUCHDB_USER=${COUCHDB_USER}
+      - COUCHDB_PASSWORD=${COUCHDB_PASSWORD}
+    volumes:
+      - ${DEFAULT_APPS_MOUNT}/${COUCHDB_FOLDER}/couchdb-data:/opt/couchdb/data
+      - ${DEFAULT_APPS_MOUNT}/${COUCHDB_FOLDER}/couchdb-etc:/opt/couchdb/etc/local.d
+    ports:
+      - "${COUCHDB_PORT}:5984"
+    restart: always
+
+  pihole:
+    image: pihole/pihole:latest
+    container_name: pihole
+    hostname: pihole
+    domainname: home.lan
+    cap_add:
+      - NET_ADMIN
+    environment:
+      TZ: "${DEFAULT_TIMEZONE}"
+      WEBPASSWORD: "${PI_HOLE_WEB_PASSWORD}"
+      FTLCONF_REPLY_ADDR4: "${DEFAULT_LAN_IP}"
+    volumes:
+      - ${DEFAULT_APPS_MOUNT}/${PI_HOLE_FOLDER}/etc-pihole:/etc/pihole
+      - ${DEFAULT_APPS_MOUNT}/${PI_HOLE_FOLDER}/etc-dnsmasq.d:/etc/dnsmasq.d
+    dns:
+      - 127.0.0.1
+      - ${PI_HOLE_DEFAULT_DNS}
+    ports:
+      - "53:53/tcp"
+      - "53:53/udp"
+      - "${PI_HOLE_UI_PORT}:80/tcp"
+    restart: unless-stopped

@@ -1,0 +1,3 @@
+.my_env
+apps/*
+!apps/home-server-dashboard

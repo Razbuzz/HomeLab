@@ -1,0 +1,23 @@
+[Unit]
+Description=HomeLab Docker Compose Stack
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Replace this with your actual project folder path
+WorkingDirectory=/home/HomeLab
+
+# Start the stack in detached mode
+ExecStart=/usr/bin/make up
+
+# Stop the stack gracefully when the system shuts downnz
+ExecStop=/usr/bin/make down
+
+# Disable timeout logic to allow heavy containers (like Plex) time to start/stop
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
