@@ -190,10 +190,17 @@ services:
       - NET_ADMIN
     environment:
       TZ: '${DEFAULT_TIMEZONE}'
+      PIHOLE_UID: '${DEFAULT_PUID}'
+      PIHOLE_GID: '${DEFAULT_GUID}'
+      WEBPASSWORD: '${PI_HOLE_WEB_PASSWORD}'
       FTLCONF_webserver_api_password: '${PI_HOLE_WEB_PASSWORD}'
-      FTLCONF_dns_listeningMode: 'ALL'
+      DNSMASQ_LISTENING: 'all'
+    dns:
+      - 127.0.0.1
+      - ${PI_HOLE_DEFAULT_DNS}
     volumes:
-      - ${DEFAULT_APPS_MOUNT}/${PI_HOLE_FOLDER}:/etc/pihole
+      - ${DEFAULT_APPS_MOUNT}/${PI_HOLE_FOLDER}/${PI_HOLE_FOLDER}/:/etc/pihole
+      - ${DEFAULT_APPS_MOUNT}/${PI_HOLE_FOLDER}/${PI_HOLE_DNSMASQ_FOLDER}:/etc/dnsmasq.d
     ports:
       - "53:53/tcp"
       - "53:53/udp"
