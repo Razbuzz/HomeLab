@@ -2,4 +2,4 @@
 .my_env
 apps/*
 !apps/home-server-dashboard
-!apps/pulsarr
+!apps/pulsarr.env

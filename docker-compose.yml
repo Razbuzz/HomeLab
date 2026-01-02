@@ -186,20 +186,14 @@ services:
   pihole:
     image: pihole/pihole:latest
     container_name: pihole
-    hostname: pihole
-    domainname: home.lan
     cap_add:
       - NET_ADMIN
     environment:
-      TZ: "${DEFAULT_TIMEZONE}"
-      WEBPASSWORD: "${PI_HOLE_WEB_PASSWORD}"
-      FTLCONF_REPLY_ADDR4: "${DEFAULT_LAN_IP}"
+      TZ: '${DEFAULT_TIMEZONE}'
+      FTLCONF_webserver_api_password: '${PI_HOLE_WEB_PASSWORD}'
+      FTLCONF_dns_listeningMode: 'ALL'
     volumes:
-      - ${DEFAULT_APPS_MOUNT}/${PI_HOLE_FOLDER}/etc-pihole:/etc/pihole
-      - ${DEFAULT_APPS_MOUNT}/${PI_HOLE_FOLDER}/etc-dnsmasq.d:/etc/dnsmasq.d
-    dns:
-      - 127.0.0.1
-      - ${PI_HOLE_DEFAULT_DNS}
+      - ${DEFAULT_APPS_MOUNT}/${PI_HOLE_FOLDER}:/etc/pihole
     ports:
       - "53:53/tcp"
       - "53:53/udp"

@@ -8,7 +8,7 @@ Type=oneshot
 RemainAfterExit=yes
 
 # Replace this with your actual project folder path
-WorkingDirectory=/home/HomeLab
+WorkingDirectory=/mnt/HomeLab
 
 # Start the stack in detached mode
 ExecStart=/usr/bin/make up
