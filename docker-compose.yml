@@ -6,24 +6,6 @@ services:
       - "${DASHBOARD_PORT}:80"
     restart: always
 
-  tailscale:
-    image: tailscale/tailscale:latest
-    container_name: tailscale
-    hostname: homelab-server
-    network_mode: host
-    environment:
-      - TS_AUTHKEY=${TAILSCALE_AUTH_KEY}
-      - TS_STATE_DIR=/var/lib/tailscale
-      - TS_USERSPACE=false
-      - TS_EXTRA_ARGS=--advertise-exit-node --advertise-routes=${DEFAULT_LAN_IP}/24
-    volumes:
-      - ${DEFAULT_APPS_MOUNT}/${TAILSCALE_FOLDER}:/var/lib/tailscale
-      - /dev/net/tun:/dev/net/tun
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-    restart: always
-
   plex:
     image: lscr.io/linuxserver/plex:latest
     container_name: plex
@@ -63,7 +45,7 @@ services:
       - TORRENTING_PORT=${QBITTORRENT_TORRENTING_PORT}
     volumes:
       - ${DEFAULT_APPS_MOUNT}/${QBITTORRENT_FOLDER}/config:/config
-      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}:/${QBITTORRENT_DOWNLOADS_FOLDER} #optional
+      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}:/${QBITTORRENT_DOWNLOADS_FOLDER}
     ports:
       - "${QBITTORRENT_UI_PORT}:${QBITTORRENT_UI_PORT}"
       - "${QBITTORRENT_TORRENTING_PORT}:${QBITTORRENT_TORRENTING_PORT}"
