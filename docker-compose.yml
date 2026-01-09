@@ -143,18 +143,6 @@ services:
         - "${OVERSEERR_PORT}:5055"
     restart: always
 
-  pulsarr:
-    image: lakker/pulsarr:latest
-    container_name: pulsarr
-    ports:
-      - "3003:3003"
-    volumes:
-      - ${DEFAULT_APPS_MOUNT}/${PULSARR_FOLDER}/.env:/app/.env
-      - ${DEFAULT_STORAGE_MOUNT}/${PULSARR_FOLDER}/data:/app/data
-    restart: always
-    env_file:
-      - .env
-
   maintainerr:
       image: ghcr.io/maintainerr/maintainerr:latest
       container_name: maintainerr
