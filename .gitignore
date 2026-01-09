@@ -1,0 +1,5 @@
+.env
+.my_env
+apps/*
+!apps/home-server-dashboard
+!apps/pulsarr.env

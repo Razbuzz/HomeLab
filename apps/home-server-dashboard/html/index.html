@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Home Server Dashboard</title>
+  
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🖥️</text></svg>">
+  
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  
+  <style>
+    /* Animation Keyframes */
+    @keyframes slideUpFade {
+      from { opacity: 0; transform: translateY(20px) scale(0.95); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .animate-entry {
+      opacity: 0;
+      animation: slideUpFade 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    /* Disable text selection for app-like feel on mobile */
+    body {
+        -webkit-tap-highlight-color: transparent;
+        user-select: none;
+    }
+
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #111827; }
+    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
+  </style>
+</head>
+
+<body class="bg-gray-900 text-white min-h-screen flex flex-col items-center p-4 md:p-8 font-sans">
+  
+  <div class="max-w-7xl w-full flex-grow flex flex-col justify-center">
+    
+    <header class="text-center mb-8 md:mb-12 animate-entry" style="animation-delay: 0ms;">
+      <h1 class="text-3xl md:text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500 mb-2 filter drop-shadow-lg leading-tight">
+        Home Lab
+      </h1>
+      <p class="text-gray-400 text-sm md:text-lg">Your self-hosted services</p>
+    </header>
+
+    <div id="services" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6 pb-8">
+      </div>
+
+  </div>
+
+  <footer class="text-center text-gray-600 text-xs md:text-sm py-6 animate-entry" style="animation-delay: 1000ms;">
+    <p>&copy; 2025 Home Lab • Docker</p>
+  </footer>
+
+  <script>
+    const host = window.location.hostname;
+
+    const services = [
+      { name: "Cockpit", port: 9090, icon: "🎛️", desc: "Admin Console", note: "System" },
+      { name: "Pi-hole", port: 12120, icon: "🛡️", path: "/admin", desc: "Network Shield" },
+      { name: "Plex", port: 32400, icon: "🎬", path: "/web", desc: "Watch Movies", note: "Host" },
+      { name: "Overseerr", port: 5055, icon: "👀", desc: "Request Media" },
+      { name: "Sonarr", port: 8989, icon: "📺", desc: "TV Shows" },
+      { name: "Radarr", port: 7878, icon: "🎥", desc: "Movies" },
+      { name: "Maintainerr", port: 6246, icon: "🧹", desc: "Library Janitor" },
+      { name: "Jackett", port: 9117, icon: "🧥", desc: "Torrent Index" },
+      { name: "qBittorrent", port: 8080, icon: "⬇️", desc: "Downloads" },
+      { name: "FileBrowser", port: 10000, icon: "📂", desc: "My Files" },
+      { name: "CouchDB", port: 5984, icon: "🛋️", path: "/_utils", desc: "DB Admin" },
+      { name: "Samba", port: null, icon: "🗂️", desc: "Network Share", note: "Port 445" }
+    ];
+
+    const container = document.getElementById("services");
+
+    services.forEach((service, index) => {
+      const isClickable = service.port !== null;
+      const url = isClickable ? `http://${host}:${service.port}${service.path || ""}` : "#";
+
+      const card = document.createElement(isClickable ? "a" : "div");
+      
+      if (isClickable) {
+          card.href = url;
+          card.target = "_blank";
+          card.rel = "noopener noreferrer";
+      }
+
+      // Base classes
+      let classes = "animate-entry bg-gray-800 rounded-xl p-5 md:p-6 border border-gray-700 relative overflow-hidden group transition-all duration-200";
+      
+      if (isClickable) {
+        classes += " cursor-pointer hover:bg-gray-750 active:scale-95 active:bg-gray-700 hover:shadow-xl hover:border-blue-500/30";
+      }
+
+      card.className = classes;
+      card.style.animationDelay = `${(index * 50) + 150}ms`;
+
+      card.innerHTML = `
+        <div class="absolute top-0 right-0 p-3 opacity-5 md:opacity-10 group-hover:opacity-20 transition text-5xl md:text-6xl pointer-events-none transform group-hover:scale-110 duration-500">
+            ${service.icon}
+        </div>
+        <div class="flex items-center mb-2 md:mb-3 relative z-10">
+            <span class="text-3xl md:text-3xl mr-3 filter drop-shadow-md">${service.icon}</span>
+            <h2 class="text-lg md:text-xl font-bold text-gray-100 group-hover:text-blue-400 transition-colors">${service.name}</h2>
+        </div>
+        <p class="text-gray-400 text-xs md:text-sm mb-3 md:mb-4 relative z-10 line-clamp-1">${service.desc}</p>
+        
+        <div class="flex items-center justify-between mt-auto pt-3 border-t border-gray-700/50 relative z-10">
+            <div class="text-xs font-mono text-gray-500 group-hover:text-gray-400 transition-colors">
+                ${isClickable ? `<span class="bg-gray-900/50 px-2 py-1 rounded border border-gray-700">:${service.port}</span>` : ''}
+            </div>
+             ${service.note ? `<span class="text-[10px] md:text-xs text-yellow-500 font-medium">${service.note}</span>` : ''}
+             ${isClickable && !service.note ? `<span class="h-2 w-2 bg-green-500 rounded-full shadow-[0_0_8px_rgba(16,185,129,0.6)] group-hover:animate-pulse"></span>` : ''}
+        </div>
+      `;
+
+      container.appendChild(card);
+    });
+  </script>
+</body>
+</html>
