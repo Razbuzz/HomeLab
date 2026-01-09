@@ -170,7 +170,7 @@ services:
       restart: always
 
   couchdb:
-    image: couchdb:latest
+    image: couchdb:3.5
     container_name: couchdb-for-ols
     user: 5984:5984
     environment:
