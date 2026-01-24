@@ -127,22 +127,6 @@ services:
         - "${JACKETT_PORT}:9117"
     restart: always
 
-  overseerr:
-    image: lscr.io/linuxserver/overseerr:latest
-    container_name: overseerr
-    environment:
-      - PUID=${DEFAULT_PUID}
-      - PGID=${DEFAULT_GUID}
-      - TZ=${DEFAULT_TIMEZONE}
-    volumes:
-      - ${DEFAULT_APPS_MOUNT}/${OVERSEERR_FOLDER}/config:/config
-      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/${QBITTORRENT_TV_FOLDER}:/${OVERSEERR_TV_FOLDER}
-      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/${QBITTORRENT_MOVIES_FOLDER}:/${OVERSEERR_MOVIES_FOLDER}
-      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/:/downloads
-    ports:
-        - "${OVERSEERR_PORT}:5055"
-    restart: always
-
   maintainerr:
       image: ghcr.io/maintainerr/maintainerr:latest
       container_name: maintainerr
@@ -194,3 +178,15 @@ services:
       - "53:53/udp"
       - "${PI_HOLE_UI_PORT}:80/tcp"
     restart: unless-stopped
+
+  jellyseerr:
+      image: fallenbagel/jellyseerr:latest
+      container_name: jellyseerr
+      environment:
+          - LOG_LEVEL=debug
+          - TZ='${DEFAULT_TIMEZONE}'
+      ports:
+          - "${JELLYSEERR_PORT}:5055"
+      volumes:
+          - ${DEFAULT_APPS_MOUNT}/${JELLYSEERR_FOLDER}/config:/app/config
+      restart: unless-stopped
