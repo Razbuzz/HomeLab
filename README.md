@@ -66,11 +66,9 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     JACKETT_MOVIES_FOLDER=movies
     JACKETT_PORT=9117
 
-    # overseerr Configuration
-    OVERSEERR_FOLDER=overseerr
-    OVERSEERR_TV_FOLDER=tv
-    OVERSEERR_MOVIES_FOLDER=movies
-    OVERSEERR_PORT=5055
+    # jellyseerr Configuration
+    JELLYSEERR_FOLDER=jellyseerr
+    JELLYSEERR_PORT=5055
 
     # maintainerr Configuration
     MAINTAINERR_FOLDER=maintainerr
@@ -200,11 +198,11 @@ Radarr is a movie collection manager for Usenet and BitTorrent users. It automat
 
 [Source](https://gist.github.com/rickklaasboer/b5c159833ff2971fccd32296d8ba2260#configuring-radarr)
 
-### Overseerr
+### Jellyseerr
 
-Overseerr is a web application designed to manage and automate requests for media content in your home media server setup. It integrates seamlessly with Sonarr and Radarr, allowing users to request movies and TV shows easily. With a user-friendly interface, Overseerr provides features such as user authentication, notifications, and a comprehensive dashboard to track request statuses.
+Jellyseerr is a web application designed to manage and automate requests for media content in your home media server setup. It integrates seamlessly with Sonarr and Radarr, allowing users to request movies and TV shows easily. With a user-friendly interface, Jellyseerr provides features such as user authentication, notifications, and a comprehensive dashboard to track request statuses.
 
-> To configure Overseerr, navigate to http://your-server-ip:5055 in your browser and follow the setup wizard. Here is a reference guide for the setup steps:
+> To configure Jellyseerr, navigate to http://your-server-ip:5055 in your browser and follow the setup wizard. Here is a reference guide for the setup steps:
 >
 > **Plex Setup:**
 > 1. Sign in with your Plex account (the same one used to set up Plex)
@@ -247,13 +245,11 @@ Overseerr is a web application designed to manage and automate requests for medi
 > 12. Click **Test** to verify the connection
 > 13. Click **Save**
 >
-> After setup, you'll see the Overseerr homepage. If needed, correct your Plex URL by going to Settings > Plex and updating the Web App URL to:
+> After setup, you'll see the Jellyseerr homepage. If needed, correct your Plex URL by going to Settings > Plex and updating the Web App URL to:
 > - `http://your-server-ip:32400/web` (if not using a reverse proxy)
 > - `https://your-domain-name/web` (if using a reverse proxy)
 >
-> Overseerr is now ready to use!
-
-[Source](https://gist.github.com/rickklaasboer/b5c159833ff2971fccd32296d8ba2260#configuring-overseerr)
+> Jellyseerr is now ready to use!
 
 ### Connecting Jackett to Sonarr & Radarr
 
