@@ -60,6 +60,9 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     RADARR_MOVIES_FOLDER=movies
     RADARR_PORT=7878
 
+    # flaresolverr Configuration
+    FLARESOLVERR_PORT=8191
+
     # Jackett Configuration
     JACKETT_FOLDER=jackett
     JACKETT_TV_FOLDER=tv
@@ -136,6 +139,23 @@ qBittorrent is a free, open-source torrent client that allows you to download an
 
 [Source](https://gist.github.com/rickklaasboer/b5c159833ff2971fccd32296d8ba2260#configuring-qbittorrent)
 
+### Flaresolverr
+
+Flaresolverr is a proxy service that solves Cloudflare CAPTCHA challenges. It's essential for accessing indexers protected by Cloudflare that would otherwise fail in Jackett.
+
+> Flaresolverr runs as a background service without a web UI. It listens on port `8191` and integrates directly with Jackett.
+>
+> **To enable Flaresolverr for Jackett indexers:**
+> 1. Navigate to http://<your-server-ip>:9117 (Jackett)
+> 2. Click on an indexer that requires Cloudflare bypass
+> 3. Look for the **Flaresolverr** option and enable it
+> 4. Set the URL to: `http://flaresolverr:8191/`
+> 5. Save the configuration and test the connection
+>
+> Flaresolverr will automatically handle Cloudflare challenges. It's particularly useful for indexers like 1337x and other sites protected by Cloudflare.
+>
+> **Tip:** Only enable Flaresolverr for indexers that actually need it, as it uses additional system resources.
+
 ### Jackett
 
 Jackett is an API aggregator that allows applications like Sonarr, Radarr, and Lidarr to use a wide variety of torrent and Usenet indexers. It acts as a translator between your apps and indexers, allowing you to search for content across multiple sources from a single interface.
@@ -158,6 +178,8 @@ Jackett is an API aggregator that allows applications like Sonarr, Radarr, and L
 > - **Tags**: Optional, can be left empty
 >
 > Click **Test** to verify the configuration (you should see a green checkmark). If successful, click **Save**. Repeat for each indexer you wish to add.
+>
+> **For indexers requiring Cloudflare bypass:** Enable the Flaresolverr option in the indexer settings and set the URL to `http://flaresolverr:8191/`.
 
 [Source](https://gist.github.com/rickklaasboer/b5c159833ff2971fccd32296d8ba2260#configuring-jackett)
 
