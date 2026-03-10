@@ -223,3 +223,13 @@ services:
               capabilities: [gpu]
     runtime: nvidia
     restart: unless-stopped
+
+  qdirstat:
+    image: jlesage/qdirstat
+    container_name: qdirstat
+    ports:
+      - "${QDirstat_PORT}:5800"
+    volumes:
+      - ${DEFAULT_APPS_MOUNT}/${QDirstat_FOLDER}/config:/config
+      - ${DEFAULT_STORAGE_MOUNT}:/storage
+    restart: always
