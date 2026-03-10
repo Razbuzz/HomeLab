@@ -89,6 +89,14 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     PI_HOLE_WEB_PASSWORD=CHANGE_TO_PI_HOLE_WEB_PASSWORD
     PI_HOLE_DEFAULT_DNS=1.1.1.1
     PI_HOLE_DNSMASQ_FOLDER=pi-hole-dnsmasq
+
+    # ollama Configuration
+    OLLAMA_FOLDER=ollama
+    OLLAMA_PORT=11434
+
+    # qdirstat Configuration
+    QDirstat_FOLDER=qdirstat
+    QDirstat_PORT=5800
     ```
 3. Run the setup script:
     ```bash
@@ -392,6 +400,29 @@ Pi-hole is a network-wide ad blocker and DNS server that protects all devices on
     - Set DNS to your-server-ip (typically 10.0.0.32 based on your `.env`)
     - Alternatively, configure DHCP to distribute Pi-hole as DNS server
 5. Monitor blocked requests in the dashboard
+
+### Ollama
+
+Ollama is an open-source tool for running large language models (LLMs) locally on your machine. It allows you to run and interact with various AI models like Llama, Mistral, and others without relying on external APIs.
+
+#### Configuration
+1. Ollama runs as a background service on port `11434`
+2. To interact with Ollama, you can use the Ollama CLI or API:
+   - Pull a model: `docker exec -it ollama ollama pull llama2`
+   - Run a model: `docker exec -it ollama ollama run llama2`
+   - List models: `docker exec -it ollama ollama list`
+3. For web-based interfaces, you can integrate with tools like Open WebUI or use the API directly
+4. Models are stored in the `./apps/ollama` directory for persistence
+5. GPU acceleration is enabled if an NVIDIA GPU is available
+
+### QDirStat
+
+QDirStat is a graphical disk usage analyzer that helps you visualize and manage disk space usage on your storage mount.
+
+#### Configuration
+1. Navigate to http://your-server-ip:5800 in your browser
+2. The interface will display disk usage statistics for your storage directory (`DEFAULT_STORAGE_MOUNT`)
+3. Use the GUI to explore directories, identify large files/folders, and clean up space as needed
 
 ### Dashboard
 

@@ -202,3 +202,34 @@ services:
     ports:
       - "${FLARESOLVERR_PORT}:8191"
     restart: unless-stopped 
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "${OLLAMA_PORT}:11434"
+    volumes:
+      - ${DEFAULT_APPS_MOUNT}/${OLLAMA_FOLDER}:/root/.ollama
+    environment:
+      - PUID=${DEFAULT_PUID}
+      - PGID=${DEFAULT_GUID}
+      - TZ=${DEFAULT_TIMEZONE}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    runtime: nvidia
+    restart: unless-stopped
+
+  qdirstat:
+    image: jlesage/qdirstat
+    container_name: qdirstat
+    ports:
+      - "${QDirstat_PORT}:5800"
+    volumes:
+      - ${DEFAULT_APPS_MOUNT}/${QDirstat_FOLDER}/config:/config
+      - ${DEFAULT_STORAGE_MOUNT}:/storage
+    restart: always
