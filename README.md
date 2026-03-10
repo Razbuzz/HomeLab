@@ -93,6 +93,10 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     # ollama Configuration
     OLLAMA_FOLDER=ollama
     OLLAMA_PORT=11434
+
+    # qdirstat Configuration
+    QDirstat_FOLDER=qdirstat
+    QDirstat_PORT=5800
     ```
 3. Run the setup script:
     ```bash
@@ -410,6 +414,15 @@ Ollama is an open-source tool for running large language models (LLMs) locally o
 3. For web-based interfaces, you can integrate with tools like Open WebUI or use the API directly
 4. Models are stored in the `./apps/ollama` directory for persistence
 5. GPU acceleration is enabled if an NVIDIA GPU is available
+
+### QDirStat
+
+QDirStat is a graphical disk usage analyzer that helps you visualize and manage disk space usage on your storage mount.
+
+#### Configuration
+1. Navigate to http://your-server-ip:5800 in your browser
+2. The interface will display disk usage statistics for your storage directory (`DEFAULT_STORAGE_MOUNT`)
+3. Use the GUI to explore directories, identify large files/folders, and clean up space as needed
 
 ### Dashboard
 
