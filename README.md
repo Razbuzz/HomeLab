@@ -97,6 +97,14 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     # qdirstat Configuration
     QDirstat_FOLDER=qdirstat
     QDirstat_PORT=5800
+
+    # mattermost Configuration
+    MATTERMOST_FOLDER=mattermost
+    MATTERMOST_PORT=8065
+    MATTERMOST_DB_USER=mattermost
+    MATTERMOST_DB_PASSWORD=CHANGE_TO_MATTERMOST_DB_PASSWORD
+    MATTERMOST_DB_NAME=mattermost
+    MATTERMOST_DB_PORT=5432
     ```
 3. Run the setup script:
     ```bash
@@ -146,6 +154,21 @@ qBittorrent is a free, open-source torrent client that allows you to download an
 > To configure qBittorrent, navigate to http://your-server-ip:8080 in your browser. The default username is `admin` and password is `adminadmin`. If you plan to expose this to the internet, change these credentials immediately. Beyond that, minimal configuration is required.
 
 [Source](https://gist.github.com/rickklaasboer/b5c159833ff2971fccd32296d8ba2260#configuring-qbittorrent)
+
+### Mattermost
+
+Mattermost is a self-hosted team communication platform similar to Slack. It allows you to run private chat services across devices and integrates well with other tools.
+
+> The stack includes a PostgreSQL database and the Mattermost web application. The default port is `8065`.
+>
+> **To get started:**
+> 1. Ensure the `.env` file has the `MATTERMOST_*` variables filled out (folder, port, and database credentials).
+> 2. Run `make up` to start the services; the database and app will be created automatically.
+> 3. Navigate to http://<your-server-ip>:8065 in your browser to complete the Mattermost setup wizard.
+>
+> **Database:** By default the stack spins up a postgres container (`mattermost-db`) and you can alter credentials through the `.env` file. Remember to change `MATTERMOST_DB_PASSWORD` before exposing the service.
+>
+> **Note:** Mattermost stores its data under the `${MATTERMOST_FOLDER}` path inside the apps directory. Back it up along with your other services.
 
 ### Flaresolverr
 
