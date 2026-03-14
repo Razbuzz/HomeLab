@@ -224,6 +224,35 @@ services:
     runtime: nvidia
     restart: unless-stopped
 
+  mattermost-db:
+    image: postgres:14-alpine
+    container_name: mattermost_db
+    environment:
+      - POSTGRES_USER=${MATTERMOST_DB_USER}
+      - POSTGRES_PASSWORD=${MATTERMOST_DB_PASSWORD}
+      - POSTGRES_DB=${MATTERMOST_DB_NAME}
+    volumes:
+      - ${DEFAULT_APPS_MOUNT}/${MATTERMOST_FOLDER}/db:/var/lib/postgresql/data
+    restart: always
+
+  mattermost:
+    image: mattermost/mattermost-team-edition:latest
+    container_name: mattermost
+    user: "2000:2000"
+    ports:
+      - "${MATTERMOST_PORT}:8065"
+    environment:
+      - TZ=${DEFAULT_TIMEZONE}
+      - MM_SQLSETTINGS_DRIVERNAME=postgres
+      - MM_SQLSETTINGS_DATASOURCE=postgres://${MATTERMOST_DB_USER}:${MATTERMOST_DB_PASSWORD}@mattermost-db:${MATTERMOST_DB_PORT}/${MATTERMOST_DB_NAME}?sslmode=disable&connect_timeout=10
+    volumes:
+      - ${DEFAULT_APPS_MOUNT}/${MATTERMOST_FOLDER}/data:/mattermost/data
+      - ${DEFAULT_APPS_MOUNT}/${MATTERMOST_FOLDER}/logs:/mattermost/logs
+      - ${DEFAULT_APPS_MOUNT}/${MATTERMOST_FOLDER}/config:/mattermost/config
+    depends_on:
+      - mattermost-db
+    restart: always
+
   qdirstat:
     image: jlesage/qdirstat
     container_name: qdirstat

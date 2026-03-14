@@ -18,6 +18,12 @@ docker compose up -d --pull always --build --remove-orphans
 # This uses DEFAULT_STORAGE_MOUNT (/mnt/usb) and PUID/GUID (1000)
 sudo chown -R $DEFAULT_PUID:$DEFAULT_GUID $DEFAULT_STORAGE_MOUNT
 
+# Also ensure app-volume permissions (Mattermost + other services) are correct
+sudo chown -R $DEFAULT_PUID:$DEFAULT_GUID $DEFAULT_APPS_MOUNT
+
+# Specifically set Mattermost directory ownership to 2000:2000
+sudo chown -R 2000:2000 $DEFAULT_APPS_MOUNT/mattermost
+
 # 4. Restart services to apply changes
 docker compose restart
 
