@@ -98,6 +98,10 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     QDirstat_FOLDER=qdirstat
     QDirstat_PORT=5800
 
+    # xTeVe Configuration
+    XTEVE_FOLDER=xteve
+    XTEVE_PORT=34400
+
     # mattermost Configuration
     MATTERMOST_FOLDER=mattermost
     MATTERMOST_PORT=8065
@@ -213,6 +217,14 @@ Jackett is an API aggregator that allows applications like Sonarr, Radarr, and L
 > **For indexers requiring Cloudflare bypass:** Enable the Flaresolverr option in the indexer settings and set the URL to `http://flaresolverr:8191/`.
 
 [Source](https://gist.github.com/rickklaasboer/b5c159833ff2971fccd32296d8ba2260#configuring-jackett)
+
+### xTeVe
+
+xTeVe is an IPTV proxy that converts M3U playlists into a TV tuner interface. It works well with Plex, Emby, and Jellyfin.
+
+> To access xTeVe, navigate to http://<your-server-ip>:34400 in your browser. Add your M3U playlist and configure any required EPG sources.
+
+> When configuring Plex (or another media server), point the tuner configuration to: `http://xteve:34400/`.
 
 ### Sonarr
 

@@ -127,6 +127,19 @@ services:
         - "${JACKETT_PORT}:9117"
     restart: always
 
+  xteve:
+    image: alturismo/xteve:latest
+    container_name: xteve
+    environment:
+      - PUID=${DEFAULT_PUID}
+      - PGID=${DEFAULT_GUID}
+      - TZ=${DEFAULT_TIMEZONE}
+    volumes:
+      - ${DEFAULT_APPS_MOUNT}/${XTEVE_FOLDER}/config:/config
+    ports:
+      - "${XTEVE_PORT}:34400"
+    restart: always
+
   maintainerr:
       image: ghcr.io/maintainerr/maintainerr:latest
       container_name: maintainerr
