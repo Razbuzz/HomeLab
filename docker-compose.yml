@@ -65,7 +65,7 @@ services:
       - PGID=${DEFAULT_GUID}
 
   samba:
-    image: dockurr/samba
+    image: dockurr/samba:4.22.6
     container_name: samba
     environment:
       NAME: "${SAMBA_SHARE_NAME}"
