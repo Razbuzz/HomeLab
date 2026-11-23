@@ -74,6 +74,7 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     # seerr Configuration
     SEERR_FOLDER=seerr
     SEERR_PORT=5055
+    SEERR_LOG_LEVEL=info
 
     # maintainerr Configuration
     MAINTAINERR_FOLDER=maintainerr
@@ -257,11 +258,39 @@ Radarr is a movie collection manager for Usenet and BitTorrent users. It automat
 
 [Source](https://gist.github.com/rickklaasboer/b5c159833ff2971fccd32296d8ba2260#configuring-radarr)
 
-### Jellyseerr
+### Seerr
 
-Jellyseerr is a web application designed to manage and automate requests for media content in your home media server setup. It integrates seamlessly with Sonarr and Radarr, allowing users to request movies and TV shows easily. With a user-friendly interface, Jellyseerr provides features such as user authentication, notifications, and a comprehensive dashboard to track request statuses.
+Seerr is a web application designed to manage and automate requests for media content in your home media server setup. It integrates seamlessly with Sonarr and Radarr, allowing users to request movies and TV shows easily. With a user-friendly interface, Seerr provides features such as user authentication, notifications, and a comprehensive dashboard to track request statuses.
 
-> To configure Jellyseerr, navigate to http://your-server-ip:5055 in your browser and follow the setup wizard. Here is a reference guide for the setup steps:
+> **Access:** Navigate to `http://<your-server-ip>:5055` (or `${SEERR_PORT}` if customized in `.env`) in your browser and follow the setup wizard.
+>
+> **Config directory permissions & logging:**
+> - The official Seerr image (`ghcr.io/seerr-team/seerr`) runs rootless as the `node` user (`1000:1000`) and does **not** honor `PUID`/`PGID` environment variables (see [Why Seerr Doesn't Support PUID/PGID](https://docs.seerr.dev/blog/why-seerr-doesnt-support-puid-pgid/) and [Seerr Docker docs](https://docs.seerr.dev/getting-started/docker/)).
+> - Ensure `${DEFAULT_APPS_MOUNT}/${SEERR_FOLDER}/config` is owned by `1000:1000`:
+>   ```bash
+>   mkdir -p "${DEFAULT_APPS_MOUNT}/${SEERR_FOLDER}/config"
+>   docker run --rm -v "${DEFAULT_APPS_MOUNT}/${SEERR_FOLDER}/config:/data" alpine chown -R 1000:1000 /data
+>   ```
+> - Logging defaults to `info` via `SEERR_LOG_LEVEL` in `.env` (set to `debug` when troubleshooting).
+> - The container always listens internally on port `5055`; `SEERR_PORT` in `.env` controls only the published host port.
+>
+> **Migrating from Jellyseerr:**
+>
+> Follow the official [Seerr Migration Guide](https://docs.seerr.dev/migration-guide/) when upgrading an existing Jellyseerr setup:
+> 1. Stop the stack: `make down`
+> 2. Update `.env`: rename `JELLYSEERR_FOLDER` → `SEERR_FOLDER` (default `seerr`) and `JELLYSEERR_PORT` → `SEERR_PORT` (default `5055`), and add `SEERR_LOG_LEVEL=info`.
+> 3. Copy your existing Jellyseerr config directory to Seerr's config path (preserving data as a backup):
+>    ```bash
+>    mkdir -p "${DEFAULT_APPS_MOUNT}/seerr"
+>    cp -a "${DEFAULT_APPS_MOUNT}/jellyseerr/config" "${DEFAULT_APPS_MOUNT}/seerr/config"
+>    ```
+> 4. Ensure ownership is `1000:1000` so the rootless `node` user can read and write `/app/config`:
+>    ```bash
+>    docker run --rm -v "${DEFAULT_APPS_MOUNT}/seerr/config:/data" alpine chown -R 1000:1000 /data
+>    ```
+> 5. Start the stack: `make up` (Seerr automatically migrates your Jellyseerr database and settings on first startup).
+>
+> Here is a reference guide for the initial setup steps:
 >
 > **Plex Setup:**
 > 1. Sign in with your Plex account (the same one used to set up Plex)
@@ -304,11 +333,11 @@ Jellyseerr is a web application designed to manage and automate requests for med
 > 12. Click **Test** to verify the connection
 > 13. Click **Save**
 >
-> After setup, you'll see the Jellyseerr homepage. If needed, correct your Plex URL by going to Settings > Plex and updating the Web App URL to:
+> After setup, you'll see the Seerr homepage. If needed, correct your Plex URL by going to Settings > Plex and updating the Web App URL to:
 > - `http://your-server-ip:32400/web` (if not using a reverse proxy)
 > - `https://your-domain-name/web` (if using a reverse proxy)
 >
-> Jellyseerr is now ready to use!
+> Seerr is now ready to use!
 
 ### Connecting Jackett to Sonarr & Radarr
 
