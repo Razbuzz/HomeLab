@@ -27,7 +27,7 @@ pull: ## Just pull images (useful for pre-loading updates)
 clean: ## Clean up dangling images to free space
 	docker image prune -f
 
-permissions: ## Fix ownership of app volumes (CouchDB, Mattermost, Seerr)
+permissions: ## Fix ownership of app volumes (CouchDB, Seerr)
 	bash scripts/fix-permissions.sh
 
 setup: ## Run initial setup scripts (directories & system service)

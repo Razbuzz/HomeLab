@@ -47,7 +47,7 @@ When preparing a release `vX.Y.Z`:
 
 ## 4. Periodic Maintenance & Hygiene
 - **Image tag & security audits:** Periodically review pinned Docker image tags in `docker-compose.yml` for security patches and CVE advisories; flag any legacy `:latest` services that should be pinned during scheduled maintenance.
-- **Upstream breaking changes:** Inspect release notes before bumping major database or app versions (e.g., PostgreSQL, CouchDB, Mattermost, Pi-hole, Seerr). Require explicit migration notes in `README.md` and `CHANGELOG.md`.
+- **Upstream breaking changes:** Inspect release notes before bumping major database or app versions (e.g., PostgreSQL, CouchDB, Pi-hole, Seerr). Require explicit migration notes in `README.md` and `CHANGELOG.md`.
 - **Branch protection:** Verify `develop` and `main` protection rules require pull requests, passing `CI gate` status checks, and disallow direct pushes or force-pushes.
 - **Branch & worktree hygiene:** Audit stale branches and leftover worktrees; request confirmation before deleting unmerged or historical branches.
 

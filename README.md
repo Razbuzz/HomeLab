@@ -105,14 +105,6 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     QDirstat_FOLDER=qdirstat
     QDirstat_PORT=5800
 
-    # mattermost Configuration
-    MATTERMOST_FOLDER=mattermost
-    MATTERMOST_PORT=8065
-    MATTERMOST_DB_USER=CHANGE_TO_MATTERMOST_DB_USER
-    MATTERMOST_DB_PASSWORD=CHANGE_TO_MATTERMOST_DB_PASSWORD
-    MATTERMOST_DB_NAME=mattermost
-    MATTERMOST_DB_PORT=5432
-
     # hermes-agent Configuration (beta profile)
     HERMES_FOLDER=hermes
     HERMES_API_TIMEOUT=1800
@@ -122,13 +114,6 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=CHANGE_TO_HERMES_DASHBOARD_PASSWORD
     HERMES_DASHBOARD_BASIC_AUTH_SECRET=CHANGE_TO_HERMES_DASHBOARD_SESSION_SECRET
     HERMES_OPENROUTER_API_KEY=CHANGE_TO_OPENROUTER_API_KEY
-    HERMES_MATTERMOST_URL=http://mattermost:8065
-    HERMES_MATTERMOST_TOKEN=CHANGE_TO_MATTERMOST_BOT_TOKEN
-    HERMES_MATTERMOST_ALLOWED_USERS=CHANGE_TO_MATTERMOST_USER_ID
-    HERMES_MATTERMOST_ALLOWED_CHANNELS=CHANGE_TO_MATTERMOST_CHANNEL_IDS
-    HERMES_MATTERMOST_HOME_CHANNEL=CHANGE_TO_MATTERMOST_HOME_CHANNEL_ID
-    HERMES_MATTERMOST_REPLY_MODE=thread
-    HERMES_MATTERMOST_REQUIRE_MENTION=true
     ```
 3. Run the setup script:
     ```bash
@@ -150,7 +135,7 @@ Available commands:
   logs                 View logs for all services (Ctrl+C to exit)
   pull                 Just pull images (useful for pre-loading updates)
   clean                Clean up dangling images to free space
-  permissions          Fix ownership of app volumes (CouchDB, Mattermost, Seerr)
+  permissions          Fix ownership of app volumes (CouchDB, Seerr)
   setup                Run initial setup scripts (directories & system service)
   lint                 Run yamllint and shellcheck (and hadolint if installed)
   validate             Validate docker-compose.yml with temporary placeholders when needed
@@ -165,7 +150,7 @@ Available commands:
 
 ### From v1.3.0 or earlier
 
-CouchDB now runs as `${DEFAULT_PUID}:${DEFAULT_GUID}` instead of `5984:5984`. Existing `couchdb-data` and `couchdb-etc` bind-mount directories created by earlier versions (owned by `5984:5984` or `root`) will prevent the container from starting or writing data until ownership is updated. (`make permissions` also ensures expected non-root ownership for Mattermost `2000:2000` and Seerr `1000:1000`, since Seerr runs rootless as `node` and ignores `PUID`/`PGID`.)
+CouchDB now runs as `${DEFAULT_PUID}:${DEFAULT_GUID}` instead of `5984:5984`. Existing `couchdb-data` and `couchdb-etc` bind-mount directories created by earlier versions (owned by `5984:5984` or `root`) will prevent the container from starting or writing data until ownership is updated. (`make permissions` also ensures expected non-root ownership for Seerr `1000:1000`, since Seerr runs rootless as `node` and ignores `PUID`/`PGID`.)
 
 Run once before (or as part of) starting the updated stack:
 
@@ -210,21 +195,6 @@ qBittorrent is a free, open-source torrent client that allows you to download an
 > To configure qBittorrent, navigate to http://your-server-ip:8080 in your browser. The default username is `admin` and password is `adminadmin`. If you plan to expose this to the internet, change these credentials immediately. Beyond that, minimal configuration is required.
 
 [Source](https://gist.github.com/rickklaasboer/b5c159833ff2971fccd32296d8ba2260#configuring-qbittorrent)
-
-### Mattermost
-
-Mattermost is a self-hosted team communication platform similar to Slack. It allows you to run private chat services across devices and integrates well with other tools.
-
-> The stack includes a PostgreSQL database and the Mattermost web application. The default port is `8065`.
->
-> **To get started:**
-> 1. Ensure the `.env` file has the `MATTERMOST_*` variables filled out (folder, port, and database credentials).
-> 2. Run `make up` to start the services; the database and app will be created automatically.
-> 3. Navigate to http://<your-server-ip>:8065 in your browser to complete the Mattermost setup wizard.
->
-> **Database:** By default the stack spins up a postgres container (`mattermost-db`) and you can alter credentials through the `.env` file. Remember to change `MATTERMOST_DB_PASSWORD` before exposing the service.
->
-> **Note:** Mattermost stores its data under the `${MATTERMOST_FOLDER}` path inside the apps directory. Back it up along with your other services.
 
 ### Flaresolverr
 
@@ -527,12 +497,13 @@ Ollama is an open-source tool for running large language models (LLMs) locally o
 
 ### Hermes Agent (Beta)
 
-Hermes Agent is an opt-in autonomous AI agent (`nousresearch/hermes-agent:v0.23.3`) under the Docker Compose `beta` profile. Normal `make up` skips it; use `make up-beta` and `make down-beta` to run it alongside Ollama and Mattermost.
+Hermes Agent is an opt-in autonomous AI agent (`nousresearch/hermes-agent:v0.23.3`) under the Docker Compose `beta` profile. Normal `make up` skips it; use `make up-beta` and `make down-beta` to run it alongside Ollama.
 
 - **Access URL (Web Dashboard):** `http://<DEFAULT_LAN_IP>:9119` (LAN-only, fail-closed Basic Auth via `HERMES_DASHBOARD_BASIC_AUTH_*`; set `HERMES_DASHBOARD=0` to run headless).
+- **CLI Usage:** Interact directly inside the running container with `docker exec -it hermes-agent hermes`.
 - **LLM Setup:** Uses local Ollama (`http://ollama:11434/v1` at 64K context) by default, with optional per-turn OpenRouter cloud fallback (`HERMES_OPENROUTER_API_KEY` + `fallback_providers` in `config.yaml`).
-- **Mattermost Bot:** Connects outbound over the Compose network (`http://mattermost:8065`) with allowlisted 26-character Mattermost User IDs and Channel IDs.
-- **Setup & Security Guide:** Copy [`configs/hermes/config.yaml.example`](configs/hermes/config.yaml.example) to `${DEFAULT_APPS_MOUNT}/${HERMES_FOLDER}/config.yaml`, populate `.env`, pull an Ollama model, and run `make up-beta`. See [docs/hermes-agent.md](docs/hermes-agent.md) for VRAM-tier model picks, Mattermost bot setup, and hardening details.
+- **Optional External Messaging Gateways:** Telegram, Discord, Slack, and other supported messaging platforms can be connected via outbound gateway tokens/config (see the [Hermes Messaging Docs](https://hermes-agent.nousresearch.com/docs/user-guide/messaging)).
+- **Setup & Security Guide:** Copy [`configs/hermes/config.yaml.example`](configs/hermes/config.yaml.example) to `${DEFAULT_APPS_MOUNT}/${HERMES_FOLDER}/config.yaml`, populate `.env`, pull an Ollama model, and run `make up-beta`. See [docs/hermes-agent.md](docs/hermes-agent.md) for VRAM-tier model picks, optional external messaging gateways, and hardening details.
 
 ### QDirStat
 
