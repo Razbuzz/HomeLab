@@ -135,11 +135,12 @@ Available commands:
   logs                 View logs for all services (Ctrl+C to exit)
   pull                 Just pull images (useful for pre-loading updates)
   clean                Clean up dangling images to free space
-  permissions          Fix ownership of app volumes (CouchDB, Seerr)
+  permissions          Fix ownership of app volumes (CouchDB, Maintainerr, Seerr)
   setup                Run initial setup scripts (directories & system service)
   lint                 Run yamllint and shellcheck (and hadolint if installed)
   validate             Validate docker-compose.yml with temporary placeholders when needed
   test                 Run pytest validation suite
+  system-test          Run full-stack system test (make up + healthchecks + make down)
   check                Run all local quality checks (lint, validate, test)
   changelog            Generate CHANGELOG.md using git-cliff
   release-notes        Preview unreleased release notes via git-cliff
@@ -549,7 +550,7 @@ This project is provided as-is for personal use. Please ensure you comply with a
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the branching model, Conventional Commits guidelines, environment/documentation sync rules, and how to run local quality checks (`make check`).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the branching model, Conventional Commits guidelines, environment/documentation sync rules, and how to run local quality checks (`make check`) as well as the full-stack end-to-end verification (`make system-test`, which runs automatically in the CI `System Test (make up)` stage).
 
 ## Contributing
 

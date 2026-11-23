@@ -10,7 +10,7 @@ Key components:
 
 - `docker-compose.yml` — Service definitions, volume mounts, ports, GPU reservations, and restart policies.
 - `.env` — Environment configuration template with `CHANGE_TO_*` placeholders for secrets and host-specific values.
-- `Makefile` — Stack lifecycle (`up`, `down`, `restart`, `logs`, `pull`, `clean`, `setup`) and quality checks (`lint`, `validate`, `test`, `check`), plus `changelog` when release tooling is present.
+- `Makefile` — Stack lifecycle (`up`, `down`, `restart`, `logs`, `pull`, `clean`, `setup`) and quality checks (`lint`, `validate`, `test`, `system-test`, `check`), plus `changelog` when release tooling is present.
 - `scripts/` — Host bootstrap, apt dependency installation, and systemd service setup scripts.
 - `apps/home-server-dashboard/` — Custom Nginx static dashboard (`html/index.html`) listing web services and ports.
 - `tests/` — Automated pytest suite validating compose rendering, `.env` ↔ `README.md` parity, port uniqueness, dashboard port consistency, and script safety.
@@ -74,6 +74,7 @@ Every change that adds, renames, or removes a service, environment variable, or 
 ### 6. Verification Before Opening a PR
 Run the local quality suite and empirical container checks before pushing or opening a PR:
 - `make check` (runs `lint`, `validate`, and `test`) — or the underlying tools directly (`yamllint`, `shellcheck`, `DEFAULT_STORAGE_MOUNT=/tmp/homelab-storage docker compose config --quiet`, `python3 -m pytest -q tests`).
+- `make system-test` — runs `scripts/system-test.sh` end-to-end (`make up` with `tests/docker-compose.ci.yml` in an isolated temp workspace, verifies all 15 default services reach `healthy` and answer on host ports, and tears down with `make down`); also enforced in CI via the `System Test (make up)` stage.
 - Empirical Docker verification (building/pulling/starting modified services and verifying HTTP/health endpoints against temporary directories, then tearing down cleanly).
 
 ## Specialized Agents
