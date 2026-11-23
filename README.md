@@ -160,6 +160,8 @@ Available commands:
   validate             Validate docker-compose.yml with temporary placeholders when needed
   test                 Run pytest validation suite
   check                Run all local quality checks (lint, validate, test)
+  changelog            Generate CHANGELOG.md using git-cliff
+  release-notes        Preview unreleased release notes via git-cliff
   help                 Show this help message
 ```
 
@@ -566,6 +568,14 @@ The custom dashboard serves as the home page for your HomeLab, providing quick a
 3. Modify the dashboard configuration by editing files in `./apps/home-server-dashboard`
 4. Update service URLs and links to match your setup and network configuration
 
+
+## Releases
+
+Changelogs are generated from [Conventional Commits](https://www.conventionalcommits.org/) using [`git-cliff`](https://git-cliff.org/) (`cliff.toml`). See [CHANGELOG.md](CHANGELOG.md) for the full release history.
+
+- Preview unreleased changes locally: `make release-notes`
+- Regenerate `CHANGELOG.md`: `make changelog`
+- Pushing a version tag (`v*.*.*`) triggers the [Release](.github/workflows/release.yml) workflow to publish a GitHub Release automatically.
 
 ## Sources
 
