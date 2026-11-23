@@ -35,7 +35,7 @@ load_env_file() {
 
   local -A _caller_set=()
   local _var
-  for _var in DEFAULT_PUID DEFAULT_GUID DEFAULT_APPS_MOUNT COUCHDB_FOLDER MATTERMOST_FOLDER SEERR_FOLDER; do
+  for _var in DEFAULT_PUID DEFAULT_GUID DEFAULT_APPS_MOUNT COUCHDB_FOLDER SEERR_FOLDER; do
     if [[ -n "${!_var+x}" ]]; then
       _caller_set["${_var}"]=1
     fi
@@ -59,7 +59,7 @@ load_env_file() {
 
     # Only import keys needed by this script; preserve caller overrides
     case "${key}" in
-      DEFAULT_PUID|DEFAULT_GUID|DEFAULT_APPS_MOUNT|COUCHDB_FOLDER|MATTERMOST_FOLDER|SEERR_FOLDER)
+      DEFAULT_PUID|DEFAULT_GUID|DEFAULT_APPS_MOUNT|COUCHDB_FOLDER|SEERR_FOLDER)
         ;;
       *)
         continue
@@ -92,7 +92,6 @@ DEFAULT_PUID="${DEFAULT_PUID:-1000}"
 DEFAULT_GUID="${DEFAULT_GUID:-1000}"
 DEFAULT_APPS_MOUNT="${DEFAULT_APPS_MOUNT:-./apps}"
 COUCHDB_FOLDER="${COUCHDB_FOLDER:-couch-db}"
-MATTERMOST_FOLDER="${MATTERMOST_FOLDER:-mattermost}"
 SEERR_FOLDER="${SEERR_FOLDER:-seerr}"
 
 if [[ ! "${DEFAULT_PUID}" =~ ^[0-9]+$ ]]; then
@@ -125,15 +124,10 @@ fi
 # Service volume ownership map: "<relative-dir-under-apps-mount>|<uid>|<gid>"
 # Add new non-root service directories here as needed.
 # Note:
-#   - Mattermost's `db` directory is intentionally omitted because the
-#     postgres image manages `/var/lib/postgresql/data` ownership itself.
 #   - Seerr runs rootless as `node` (1000:1000) and ignores PUID/PGID.
 OWNERSHIP_MAP=(
   "${COUCHDB_FOLDER}/couchdb-data|${DEFAULT_PUID}|${DEFAULT_GUID}"
   "${COUCHDB_FOLDER}/couchdb-etc|${DEFAULT_PUID}|${DEFAULT_GUID}"
-  "${MATTERMOST_FOLDER}/data|2000|2000"
-  "${MATTERMOST_FOLDER}/logs|2000|2000"
-  "${MATTERMOST_FOLDER}/config|2000|2000"
   "${SEERR_FOLDER}/config|1000|1000"
 )
 

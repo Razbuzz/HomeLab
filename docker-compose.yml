@@ -244,7 +244,6 @@ services:
     command: ["gateway", "run"]
     depends_on:
       - ollama
-      - mattermost
     ports:
       - "${DEFAULT_LAN_IP}:${HERMES_DASHBOARD_PORT}:9119"
     volumes:
@@ -263,13 +262,6 @@ services:
       - HERMES_DASHBOARD_BASIC_AUTH_SECRET=${HERMES_DASHBOARD_BASIC_AUTH_SECRET}
       - API_SERVER_ENABLED=false
       - OPENROUTER_API_KEY=${HERMES_OPENROUTER_API_KEY}
-      - MATTERMOST_URL=${HERMES_MATTERMOST_URL}
-      - MATTERMOST_TOKEN=${HERMES_MATTERMOST_TOKEN}
-      - MATTERMOST_ALLOWED_USERS=${HERMES_MATTERMOST_ALLOWED_USERS}
-      - MATTERMOST_ALLOWED_CHANNELS=${HERMES_MATTERMOST_ALLOWED_CHANNELS}
-      - MATTERMOST_HOME_CHANNEL=${HERMES_MATTERMOST_HOME_CHANNEL}
-      - MATTERMOST_REPLY_MODE=${HERMES_MATTERMOST_REPLY_MODE}
-      - MATTERMOST_REQUIRE_MENTION=${HERMES_MATTERMOST_REQUIRE_MENTION}
     shm_size: "1g"
     mem_limit: 4g
     pids_limit: 512
@@ -287,35 +279,6 @@ services:
       retries: 3
       start_period: 45s
     restart: unless-stopped
-
-  mattermost-db:
-    image: postgres:14-alpine
-    container_name: mattermost_db
-    environment:
-      - POSTGRES_USER=${MATTERMOST_DB_USER}
-      - POSTGRES_PASSWORD=${MATTERMOST_DB_PASSWORD}
-      - POSTGRES_DB=${MATTERMOST_DB_NAME}
-    volumes:
-      - ${DEFAULT_APPS_MOUNT}/${MATTERMOST_FOLDER}/db:/var/lib/postgresql/data
-    restart: always
-
-  mattermost:
-    image: mattermost/mattermost-team-edition:latest
-    container_name: mattermost
-    user: "2000:2000"
-    ports:
-      - "${MATTERMOST_PORT}:8065"
-    environment:
-      - TZ=${DEFAULT_TIMEZONE}
-      - MM_SQLSETTINGS_DRIVERNAME=postgres
-      - MM_SQLSETTINGS_DATASOURCE=postgres://${MATTERMOST_DB_USER}:${MATTERMOST_DB_PASSWORD}@mattermost-db:${MATTERMOST_DB_PORT}/${MATTERMOST_DB_NAME}?sslmode=disable&connect_timeout=10
-    volumes:
-      - ${DEFAULT_APPS_MOUNT}/${MATTERMOST_FOLDER}/data:/mattermost/data
-      - ${DEFAULT_APPS_MOUNT}/${MATTERMOST_FOLDER}/logs:/mattermost/logs
-      - ${DEFAULT_APPS_MOUNT}/${MATTERMOST_FOLDER}/config:/mattermost/config
-    depends_on:
-      - mattermost-db
-    restart: always
 
   qdirstat:
     image: jlesage/qdirstat
