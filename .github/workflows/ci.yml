@@ -44,9 +44,7 @@ jobs:
         run: yamllint -c .yamllint.yml docker-compose.yml .yamllint.yml .github
 
       - name: Lint shell scripts
-        run: |
-          shopt -s globstar nullglob
-          shellcheck -S warning scripts/**/*.sh
+        run: find scripts -type f -name '*.sh' -exec shellcheck -S warning {} +
 
       - name: Lint Dockerfiles
         uses: hadolint/hadolint-action@v3.5.0
@@ -71,7 +69,8 @@ jobs:
       - name: Validate Docker Compose configuration
         env:
           DEFAULT_STORAGE_MOUNT: /tmp/homelab-storage
-        run: docker compose config --quiet
+          DEFAULT_LAN_IP: 127.0.0.1
+        run: docker compose --profile '*' config --quiet
 
       - name: Run pytest suite
         run: pytest -q tests
@@ -91,6 +90,7 @@ jobs:
 
           cleanup() {
             docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+            docker image rm -f "${IMAGE_TAG}" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
 
@@ -128,8 +128,34 @@ jobs:
     steps:
       - name: Validate PR title
         uses: amannn/action-semantic-pull-request@v5
+        with:
+          types: |
+            feat
+            fix
+            docs
+            ci
+            chore
+            refactor
+            test
+            build
+            perf
+            style
+          subjectPattern: '^[a-z0-9].*[^.]$'
+          subjectPatternError: |
+            The subject "{subject}" in PR title "{title}" must start with lowercase and have no trailing period.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate PR title length
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          if [ "${#PR_TITLE}" -gt 72 ]; then
+            echo "ERROR: PR title exceeds 72 characters (${#PR_TITLE}): ${PR_TITLE}"
+            exit 1
+          fi
+          echo "OK: PR title length ${#PR_TITLE} <= 72"
 
       - name: Checkout repository for commit history check
         if: github.base_ref == 'develop'
@@ -144,12 +170,13 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          REGEX='^(feat|fix|docs|ci|chore|refactor|test|build|perf|style)(\([a-z0-9._-]+\))?!?: [a-z0-9].{0,71}$'
+          REGEX='^(feat|fix|docs|ci|chore|refactor|test|build|perf|style)(\([a-z0-9._-]+\))?!?: [a-z0-9].*$'
           FAILED=0
           while IFS= read -r sha; do
             subject="$(git log -1 --format=%s "${sha}")"
-            if [[ ! "${subject}" =~ ${REGEX} ]] || [[ "${subject}" == *. ]]; then
-              echo "ERROR: Commit ${sha:0:7} does not follow Conventional Commits: ${subject}"
+            if [[ ! "${subject}" =~ ${REGEX} ]] || [[ "${subject}" == *. ]] || [ "${#subject}" -gt 72 ]; then
+              echo "ERROR: Commit ${sha:0:7} violates Conventional Commits" \
+                "(<= 72 chars, lowercase, no trailing period): ${subject}"
               FAILED=1
             else
               echo "OK: ${sha:0:7} ${subject}"
@@ -158,7 +185,7 @@ jobs:
 
           if [ "${FAILED}" -ne 0 ]; then
             echo "Commit subjects targeting develop must follow Conventional Commits 1.0:"
-            echo "  type(optional-scope): lowercase imperative summary (no trailing period)"
+            echo "  type(optional-scope): lowercase imperative summary (<= 72 chars, no trailing period)"
             exit 1
           fi
 
