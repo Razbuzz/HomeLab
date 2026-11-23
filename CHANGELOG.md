@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.4.0] - 2026-11-23
 
 ### Features
 
@@ -21,6 +21,7 @@ All notable changes to this project will be documented in this file.
 
 ### Documentation
 
+- **release:** Regenerate changelog after rebase onto develop ([b7cd792](https://github.com/Razbuzz/HomeLab/commit/b7cd792c583ce735ed7a65608f5dd7405651d5ac))
 - **release:** Document changelog targets and release workflow ([72c813c](https://github.com/Razbuzz/HomeLab/commit/72c813c5fc13e638f71c02ba5a6993e957ad2784))
 - **hermes:** Add operator guide and sync README for hermes agent ([13dd84c](https://github.com/Razbuzz/HomeLab/commit/13dd84c1af0081da468f93e434c0f5020b8d6f34))
 - **permissions:** Document Seerr ownership and clean Makefile EOF ([d6aa935](https://github.com/Razbuzz/HomeLab/commit/d6aa935babafe1bafc8d8471c209a5ba77c03c05))
