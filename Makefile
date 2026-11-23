@@ -1,4 +1,4 @@
-.PHONY: help up down restart logs pull clean setup permissions lint validate test check
+.PHONY: help up down up-beta down-beta restart logs pull clean setup permissions lint validate test check
 
 # ==========================================
 # 🛠️ COMMANDS
@@ -9,6 +9,12 @@ up: permissions ## Start the stack (pulls latest images & builds dashboard)
 
 down: ## Stop the stack and remove containers
 	docker compose down
+
+up-beta: permissions ## Start the stack including beta services (e.g. Hermes Agent)
+	docker compose --profile beta up -d --pull always --build --remove-orphans
+
+down-beta: ## Stop the stack including beta services
+	docker compose --profile beta down
 
 restart: down up ## Restart the stack (runs down then up)
 

@@ -242,6 +242,10 @@ services:
       - PUID=${DEFAULT_PUID}
       - PGID=${DEFAULT_GUID}
       - TZ=${DEFAULT_TIMEZONE}
+      - OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH}
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE}
+      - OLLAMA_FLASH_ATTENTION=${OLLAMA_FLASH_ATTENTION}
+      - OLLAMA_KV_CACHE_TYPE=${OLLAMA_KV_CACHE_TYPE}
     deploy:
       resources:
         reservations:
@@ -250,6 +254,58 @@ services:
               count: all
               capabilities: [gpu]
     runtime: nvidia
+    restart: unless-stopped
+
+  hermes-agent:
+    image: nousresearch/hermes-agent:v0.23.3
+    container_name: hermes-agent
+    profiles:
+      - beta
+    command: ["gateway", "run"]
+    depends_on:
+      - ollama
+      - mattermost
+    ports:
+      - "${DEFAULT_LAN_IP}:${HERMES_DASHBOARD_PORT}:9119"
+    volumes:
+      - ${DEFAULT_APPS_MOUNT}/${HERMES_FOLDER}:/opt/data
+    environment:
+      - HERMES_UID=${DEFAULT_PUID}
+      - HERMES_GID=${DEFAULT_GUID}
+      - TZ=${DEFAULT_TIMEZONE}
+      - HERMES_TIMEZONE=${DEFAULT_TIMEZONE}
+      - HERMES_API_TIMEOUT=${HERMES_API_TIMEOUT}
+      - HERMES_DASHBOARD=${HERMES_DASHBOARD}
+      - HERMES_DASHBOARD_HOST=0.0.0.0
+      - HERMES_DASHBOARD_PORT=9119
+      - HERMES_DASHBOARD_BASIC_AUTH_USERNAME=${HERMES_DASHBOARD_BASIC_AUTH_USERNAME}
+      - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD}
+      - HERMES_DASHBOARD_BASIC_AUTH_SECRET=${HERMES_DASHBOARD_BASIC_AUTH_SECRET}
+      - API_SERVER_ENABLED=false
+      - OPENROUTER_API_KEY=${HERMES_OPENROUTER_API_KEY}
+      - MATTERMOST_URL=${HERMES_MATTERMOST_URL}
+      - MATTERMOST_TOKEN=${HERMES_MATTERMOST_TOKEN}
+      - MATTERMOST_ALLOWED_USERS=${HERMES_MATTERMOST_ALLOWED_USERS}
+      - MATTERMOST_ALLOWED_CHANNELS=${HERMES_MATTERMOST_ALLOWED_CHANNELS}
+      - MATTERMOST_HOME_CHANNEL=${HERMES_MATTERMOST_HOME_CHANNEL}
+      - MATTERMOST_REPLY_MODE=${HERMES_MATTERMOST_REPLY_MODE}
+      - MATTERMOST_REQUIRE_MENTION=${HERMES_MATTERMOST_REQUIRE_MENTION}
+    shm_size: "1g"
+    mem_limit: 4g
+    pids_limit: 512
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          if [ "$${HERMES_DASHBOARD:-1}" = "1" ]; then
+            python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9119/api/status', timeout=5)";
+          else
+            test -S /opt/data/gateway.sock;
+          fi
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
     restart: unless-stopped
 
   mattermost-db:
