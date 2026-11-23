@@ -131,6 +131,7 @@ Available commands:
   logs                 View logs for all services (Ctrl+C to exit)
   pull                 Just pull images (useful for pre-loading updates)
   clean                Clean up dangling images to free space
+  permissions          Fix ownership of app volumes (CouchDB, Mattermost, Seerr)
   setup                Run initial setup scripts (directories & system service)
   lint                 Run yamllint and shellcheck (and hadolint if installed)
   validate             Validate docker-compose.yml with temporary placeholders when needed
@@ -138,6 +139,29 @@ Available commands:
   check                Run all local quality checks (lint, validate, test)
   help                 Show this help message
 ```
+
+## Upgrading
+
+### From v1.3.0 or earlier
+
+CouchDB now runs as `${DEFAULT_PUID}:${DEFAULT_GUID}` instead of `5984:5984`. Existing `couchdb-data` and `couchdb-etc` bind-mount directories created by earlier versions (owned by `5984:5984` or `root`) will prevent the container from starting or writing data until ownership is updated. (`make permissions` also ensures expected non-root ownership for Mattermost `2000:2000` and Seerr `1000:1000`, since Seerr runs rootless as `node` and ignores `PUID`/`PGID`.)
+
+Run once before (or as part of) starting the updated stack:
+
+```bash
+make permissions
+```
+
+`make up` also invokes `make permissions` automatically on every start (including via the `homelab` systemd service).
+
+Verify CouchDB is healthy after starting:
+
+```bash
+docker logs couchdb-for-ols
+curl -fsS http://<your-server-ip>:5984/_up
+```
+
+A healthy instance responds with `{"status":"ok","seeds":{}}`.
 
 ## Configuration 
 ### Requirements
@@ -457,6 +481,8 @@ CouchDB is a NoSQL database that stores data in JSON format, useful for applicat
     - Password: `COUCHDB_PASSWORD`
 3. Create databases as needed for your applications
 4. Most applications will handle CouchDB connection configuration internally
+
+> **Upgrade note (from v1.3.0 or earlier):** CouchDB now runs as `${DEFAULT_PUID}:${DEFAULT_GUID}` instead of `5984:5984`. Run `make permissions` (or `make up`) once to repair directory ownership on `couchdb-data` and `couchdb-etc`, then verify with `docker logs couchdb-for-ols` and `curl -fsS http://<your-server-ip>:5984/_up`.
 
 ### Pi-hole
 

@@ -1,10 +1,10 @@
-.PHONY: help up down restart logs pull clean setup lint validate test check
+.PHONY: help up down restart logs pull clean setup permissions lint validate test check
 
 # ==========================================
 # 🛠️ COMMANDS
 # ==========================================
 
-up: ## Start the stack (pulls latest images & builds dashboard)
+up: permissions ## Start the stack (pulls latest images & builds dashboard)
 	docker compose up -d --pull always --build --remove-orphans
 
 down: ## Stop the stack and remove containers
@@ -20,6 +20,9 @@ pull: ## Just pull images (useful for pre-loading updates)
 
 clean: ## Clean up dangling images to free space
 	docker image prune -f
+
+permissions: ## Fix ownership of app volumes (CouchDB, Mattermost, Seerr)
+	bash scripts/fix-permissions.sh
 
 setup: ## Run initial setup scripts (directories & system service)
 	bash scripts/install_dependencies.sh
