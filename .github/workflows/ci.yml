@@ -49,10 +49,9 @@ jobs:
           shellcheck -S warning scripts/**/*.sh
 
       - name: Lint Dockerfiles
-        uses: hadolint/hadolint-action@v3
+        uses: hadolint/hadolint-action@v3.5.0
         with:
           recursive: true
-          dockerfiles-path: apps
 
   test:
     name: Test
