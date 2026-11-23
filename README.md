@@ -468,6 +468,10 @@ The custom dashboard serves as the home page for your HomeLab, providing quick a
 
 - [rickklaasboer/how-to-setup-plex-with-sonarr-radarr-jackett-overseerr-and-qbittorrent-using-docker](https://gist.github.com/rickklaasboer/b5c159833ff2971fccd32296d8ba2260)
 
+## Project Agents
+
+AI coding assistants and maintainers working on this repository should start at [`AGENTS.md`](AGENTS.md) and review the role playbooks in [`.agents/`](.agents/README.md).
+
 ## License
 
 This project is provided as-is for personal use. Please ensure you comply with all applicable laws and regulations regarding media content and streaming in your jurisdiction.
