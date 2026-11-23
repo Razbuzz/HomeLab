@@ -1,5 +1,7 @@
 # HomeLab
 
+[![CI](https://github.com/Razbuzz/HomeLab/actions/workflows/ci.yml/badge.svg)](https://github.com/Razbuzz/HomeLab/actions/workflows/ci.yml)
+
 This repository contains infrastructure-as-code (Docker Compose) for a robust, automated home media server and lab environment. The stack is designed to run on a Linux environment (Ubuntu recommended) and features a fully automated media acquisition pipeline, hardware-accelerated streaming, and network storage management.
 
 ## Prerequisites
@@ -60,18 +62,18 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     RADARR_MOVIES_FOLDER=movies
     RADARR_PORT=7878
 
-    # flaresolverr Configuration
-    FLARESOLVERR_PORT=8191
-
-    # Jackett Configuration
+    # jacketts Configuration
     JACKETT_FOLDER=jackett
     JACKETT_TV_FOLDER=tv
     JACKETT_MOVIES_FOLDER=movies
     JACKETT_PORT=9117
 
-    # jellyseerr Configuration
-    JELLYSEERR_FOLDER=jellyseerr
-    JELLYSEERR_PORT=5055
+    # flaresolverr Configuration
+    FLARESOLVERR_PORT=8191
+
+    # seerr Configuration
+    SEERR_FOLDER=seerr
+    SEERR_PORT=5055
 
     # maintainerr Configuration
     MAINTAINERR_FOLDER=maintainerr
@@ -101,7 +103,7 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     # mattermost Configuration
     MATTERMOST_FOLDER=mattermost
     MATTERMOST_PORT=8065
-    MATTERMOST_DB_USER=mattermost
+    MATTERMOST_DB_USER=CHANGE_TO_MATTERMOST_DB_USER
     MATTERMOST_DB_PASSWORD=CHANGE_TO_MATTERMOST_DB_PASSWORD
     MATTERMOST_DB_NAME=mattermost
     MATTERMOST_DB_PORT=5432
@@ -466,9 +468,13 @@ The custom dashboard serves as the home page for your HomeLab, providing quick a
 
 This project is provided as-is for personal use. Please ensure you comply with all applicable laws and regulations regarding media content and streaming in your jurisdiction.
 
+## Development
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the branching model, Conventional Commits guidelines, environment/documentation sync rules, and how to run local quality checks (`make check`).
+
 ## Contributing
 
-Contributions are welcome! Feel free to submit issues or pull requests to improve this project.
+Contributions are welcome! Feel free to submit issues or pull requests to improve this project. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## Acknowledgments
 

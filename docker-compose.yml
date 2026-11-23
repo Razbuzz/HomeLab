@@ -17,13 +17,13 @@ services:
       - VERSION=docker
       - ENABLE_HW_TRANSCODE=true
       - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility  
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
     volumes:
       - ${DEFAULT_APPS_MOUNT}/${PLEX_FOLDER}/config:/config
       - ${DEFAULT_STORAGE_MOUNT}/${PLEX_FOLDER}/transcode:/transcode
       - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}:/data
-      - /dev/dri:/dev/dri                     
-    deploy: 
+      - /dev/dri:/dev/dri
+    deploy:
       resources:
         reservations:
           devices:
@@ -50,6 +50,7 @@ services:
       - "${QBITTORRENT_UI_PORT}:${QBITTORRENT_UI_PORT}"
       - "${QBITTORRENT_TORRENTING_PORT}:${QBITTORRENT_TORRENTING_PORT}"
       - "${QBITTORRENT_TORRENTING_PORT}:${QBITTORRENT_TORRENTING_PORT}/udp"
+    restart: always
 
   filebrowser:
     image: filebrowser/filebrowser:s6
@@ -108,7 +109,7 @@ services:
       - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/${QBITTORRENT_MOVIES_FOLDER}:/${RADARR_MOVIES_FOLDER}
       - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/:/downloads
     ports:
-        - "${RADARR_PORT}:7878"
+      - "${RADARR_PORT}:7878"
     restart: always
 
   jackett:
@@ -124,22 +125,22 @@ services:
       - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/${QBITTORRENT_MOVIES_FOLDER}:/${JACKETT_MOVIES_FOLDER}
       - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/:/downloads
     ports:
-        - "${JACKETT_PORT}:9117"
+      - "${JACKETT_PORT}:9117"
     restart: always
 
   maintainerr:
-      image: ghcr.io/maintainerr/maintainerr:latest
-      container_name: maintainerr
-      user: "${DEFAULT_PUID}:${DEFAULT_GUID}"
-      volumes:
-        - type: bind
-          source: ${DEFAULT_STORAGE_MOUNT}/${MAINTAINERR_FOLDER}/data
-          target: /opt/data
-      environment:
-        - TZ=${DEFAULT_TIMEZONE}
-      ports:
-        - "${MAINTAINERR_PORT}:6246"
-      restart: always
+    image: ghcr.io/maintainerr/maintainerr:latest
+    container_name: maintainerr
+    user: "${DEFAULT_PUID}:${DEFAULT_GUID}"
+    volumes:
+      - type: bind
+        source: ${DEFAULT_STORAGE_MOUNT}/${MAINTAINERR_FOLDER}/data
+        target: /opt/data
+    environment:
+      - TZ=${DEFAULT_TIMEZONE}
+    ports:
+      - "${MAINTAINERR_PORT}:6246"
+    restart: always
 
   couchdb:
     image: couchdb:3.5
@@ -211,7 +212,7 @@ services:
       - TZ='${DEFAULT_TIMEZONE}'
     ports:
       - "${FLARESOLVERR_PORT}:8191"
-    restart: unless-stopped 
+    restart: unless-stopped
 
   ollama:
     image: ollama/ollama:latest
