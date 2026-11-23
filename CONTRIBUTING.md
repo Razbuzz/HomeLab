@@ -48,6 +48,7 @@ Every change that adds, renames, or removes an environment variable, service, or
 2. **`README.md` `.env` example block** — the ` ```yml ` block in Installation must mirror `.env` key-for-key, value-for-value, and in the exact same order (enforced automatically by `pytest`).
 3. **`README.md` service section** — document the service description, access URL/port, and any upgrade or migration notes.
 4. **Dashboard (`apps/home-server-dashboard/html/index.html`)** — add or update the entry in the `services` array when the service provides a web UI.
+5. **Healthcheck (`docker-compose.yml`)** — every service in `docker-compose.yml` must define a verified `healthcheck` (`test`, `interval`, `timeout`, `retries`), enforced automatically by `pytest`.
 
 ## Local Checks
 

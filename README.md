@@ -146,6 +146,8 @@ Available commands:
   help                 Show this help message
 ```
 
+> **Tip:** All services define Docker `healthcheck` probes. Run `docker compose ps` (or `docker compose --profile '*' ps`) to inspect each container's live health status.
+
 ## Upgrading
 
 ### From v1.3.0 or earlier

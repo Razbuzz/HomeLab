@@ -68,6 +68,7 @@ Every change that adds, renames, or removes a service, environment variable, or 
 - **Image pinning:** Pin new services to explicit stable version tags (avoid `:latest`).
 - **Least privilege:** Run containers as non-root (`PUID`/`PGID` or `user: "${DEFAULT_PUID}:${DEFAULT_GUID}"`) where supported. Never mount `/var/run/docker.sock`.
 - **Experimental services:** Gate opt-in or experimental services behind `profiles: ["beta"]`.
+- **Healthchecks:** Every service in `docker-compose.yml` must define a verified `healthcheck` (`test`, `interval`, `timeout`, `retries`), enforced automatically by `pytest`.
 - **Formatting:** 2-space YAML indentation, no trailing whitespace, newline at EOF. Shell scripts must use `#!/usr/bin/env bash`, `set -euo pipefail`, be idempotent, and pass `shellcheck`.
 
 ### 6. Verification Before Opening a PR

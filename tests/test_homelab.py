@@ -350,6 +350,78 @@ def test_services_have_required_fields_and_unique_container_names() -> None:
         container_names[cname] = service_name
 
 
+def _validate_service_healthcheck(service_name: str, service_cfg: dict) -> list[str]:
+    if not isinstance(service_cfg, dict):
+        return [f"{service_name}: service definition must be a mapping"]
+
+    healthcheck = service_cfg.get("healthcheck")
+    if not isinstance(healthcheck, dict):
+        return [f"{service_name}: missing 'healthcheck' mapping"]
+
+    issues: list[str] = []
+    if healthcheck.get("disable"):
+        issues.append(f"{service_name}: healthcheck must not be disabled")
+
+    test = healthcheck.get("test")
+    if isinstance(test, str):
+        stripped_test = test.strip()
+        if not stripped_test or stripped_test.upper() == "NONE":
+            issues.append(f"{service_name}: healthcheck.test must be a non-empty active command")
+    elif isinstance(test, list):
+        if not test or not all(isinstance(item, str) for item in test):
+            issues.append(f"{service_name}: healthcheck.test list must be a non-empty list of strings")
+        else:
+            kind = test[0].strip()
+            if kind.upper() == "NONE":
+                issues.append(f"{service_name}: healthcheck.test must not be 'NONE'")
+            elif kind == "CMD":
+                if len(test) < 2 or not test[1].strip():
+                    issues.append(
+                        f"{service_name}: healthcheck.test CMD form requires a non-empty command"
+                    )
+            elif kind == "CMD-SHELL":
+                if len(test) != 2 or not test[1].strip():
+                    issues.append(
+                        f"{service_name}: healthcheck.test CMD-SHELL form requires a single non-empty command string"
+                    )
+            else:
+                issues.append(
+                    f"{service_name}: healthcheck.test list must start with 'CMD' or 'CMD-SHELL' (got {test[0]!r})"
+                )
+    else:
+        issues.append(f"{service_name}: healthcheck.test must be a command string or list")
+
+    for duration_field in ("interval", "timeout"):
+        value = healthcheck.get(duration_field)
+        if isinstance(value, str):
+            if not value.strip():
+                issues.append(f"{service_name}: healthcheck.{duration_field} must not be blank")
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            if value <= 0:
+                issues.append(f"{service_name}: healthcheck.{duration_field} must be positive")
+        else:
+            issues.append(
+                f"{service_name}: healthcheck.{duration_field} must be a non-empty duration string or positive number"
+            )
+
+    retries = healthcheck.get("retries")
+    if not isinstance(retries, int) or isinstance(retries, bool) or retries <= 0:
+        issues.append(f"{service_name}: healthcheck.retries must be a positive integer")
+
+    return issues
+
+
+def test_all_services_define_healthcheck() -> None:
+    compose = parse_compose_yaml()
+    services = compose["services"]
+    issues: list[str] = []
+
+    for service_name, service_cfg in services.items():
+        issues.extend(_validate_service_healthcheck(service_name, service_cfg))
+
+    assert not issues, "Services missing valid healthcheck definitions:\n" + "\n".join(issues)
+
+
 def test_dashboard_services_match_published_or_allowlisted_ports() -> None:
     env_map = _build_ci_env_map()
     compose = parse_compose_yaml()
@@ -425,6 +497,74 @@ def test_compose_helpers_handle_escapes_defaults_and_port_variants() -> None:
     assert _host_bindings_conflict("", "127.0.0.1") is True
     assert _host_bindings_conflict("127.0.0.1", "127.0.0.1") is True
     assert _host_bindings_conflict("127.0.0.1", "192.168.1.50") is False
+
+
+def test_validate_service_healthcheck_rejects_disabled_and_malformed_configs() -> None:
+    valid_cmd = {
+        "healthcheck": {
+            "test": ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/"],
+            "interval": "30s",
+            "timeout": "5s",
+            "retries": 3,
+        }
+    }
+    valid_shell = {
+        "healthcheck": {
+            "test": ["CMD-SHELL", "curl -sf http://127.0.0.1:80/health || exit 1"],
+            "interval": "30s",
+            "timeout": "5s",
+            "retries": 3,
+        }
+    }
+    valid_str = {
+        "healthcheck": {
+            "test": "curl -sf http://127.0.0.1:80/health || exit 1",
+            "interval": "30s",
+            "timeout": "5s",
+            "retries": 3,
+        }
+    }
+    assert _validate_service_healthcheck("svc", valid_cmd) == []
+    assert _validate_service_healthcheck("svc", valid_shell) == []
+    assert _validate_service_healthcheck("svc", valid_str) == []
+
+    base_hc = {"test": ["CMD-SHELL", "true"], "interval": "30s", "timeout": "5s", "retries": 3}
+
+    invalid_cases: list[object] = [
+        "not-a-dict",
+        {},
+        {"healthcheck": None},
+        {"healthcheck": "disabled"},
+        {"healthcheck": {**base_hc, "disable": True}},
+        {"healthcheck": {**base_hc, "test": ["NONE"]}},
+        {"healthcheck": {**base_hc, "test": ["none"]}},
+        {"healthcheck": {**base_hc, "test": "NONE"}},
+        {"healthcheck": {**base_hc, "test": ""}},
+        {"healthcheck": {**base_hc, "test": "   "}},
+        {"healthcheck": {**base_hc, "test": []}},
+        {"healthcheck": {**base_hc, "test": [""]}},
+        {"healthcheck": {**base_hc, "test": ["CMD"]}},
+        {"healthcheck": {**base_hc, "test": ["CMD", "   "]}},
+        {"healthcheck": {**base_hc, "test": ["CMD-SHELL"]}},
+        {"healthcheck": {**base_hc, "test": ["CMD-SHELL", ""]}},
+        {"healthcheck": {**base_hc, "test": ["CMD-SHELL", "   "]}},
+        {"healthcheck": {**base_hc, "test": ["INVALID", "echo"]}},
+        {"healthcheck": {**base_hc, "test": None}},
+        {"healthcheck": {**base_hc, "test": 123}},
+        {"healthcheck": {**base_hc, "interval": ""}},
+        {"healthcheck": {**base_hc, "interval": "   "}},
+        {"healthcheck": {**base_hc, "timeout": ""}},
+        {"healthcheck": {**base_hc, "timeout": "   "}},
+        {"healthcheck": {**base_hc, "timeout": True}},
+        {"healthcheck": {**base_hc, "retries": 0}},
+        {"healthcheck": {**base_hc, "retries": -1}},
+        {"healthcheck": {**base_hc, "retries": True}},
+        {"healthcheck": {**base_hc, "retries": "3"}},
+    ]
+
+    for idx, bad_cfg in enumerate(invalid_cases):
+        errors = _validate_service_healthcheck(f"bad_{idx}", bad_cfg)  # type: ignore[arg-type]
+        assert errors, f"Expected validation error for case #{idx}: {bad_cfg!r}"
 
 
 def test_shell_scripts_use_bash_shebang_and_set_e() -> None:
