@@ -1,5 +1,7 @@
 # HomeLab
 
+[![CI](https://github.com/Razbuzz/HomeLab/actions/workflows/ci.yml/badge.svg)](https://github.com/Razbuzz/HomeLab/actions/workflows/ci.yml)
+
 This repository contains infrastructure-as-code (Docker Compose) for a robust, automated home media server and lab environment. The stack is designed to run on a Linux environment (Ubuntu recommended) and features a fully automated media acquisition pipeline, hardware-accelerated streaming, and network storage management.
 
 ## Prerequisites
@@ -60,22 +62,27 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     RADARR_MOVIES_FOLDER=movies
     RADARR_PORT=7878
 
-    # flaresolverr Configuration
-    FLARESOLVERR_PORT=8191
-
-    # Jackett Configuration
+    # jacketts Configuration
     JACKETT_FOLDER=jackett
     JACKETT_TV_FOLDER=tv
     JACKETT_MOVIES_FOLDER=movies
     JACKETT_PORT=9117
 
-    # jellyseerr Configuration
-    JELLYSEERR_FOLDER=jellyseerr
-    JELLYSEERR_PORT=5055
+    # flaresolverr Configuration
+    FLARESOLVERR_PORT=8191
+
+    # seerr Configuration
+    SEERR_FOLDER=seerr
+    SEERR_PORT=5055
+    SEERR_LOG_LEVEL=info
 
     # maintainerr Configuration
     MAINTAINERR_FOLDER=maintainerr
     MAINTAINERR_PORT=6246
+
+    # threadfin Configuration
+    THREADFIN_FOLDER=threadfin
+    THREADFIN_PORT=34400
 
     # couchdb Configuration
     COUCHDB_USER=CHANGE_TO_COUCHDB_USER
@@ -93,10 +100,39 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     # ollama Configuration
     OLLAMA_FOLDER=ollama
     OLLAMA_PORT=11434
+    OLLAMA_CONTEXT_LENGTH=65536
+    OLLAMA_KEEP_ALIVE=24h
+    OLLAMA_FLASH_ATTENTION=1
+    OLLAMA_KV_CACHE_TYPE=q8_0
 
     # qdirstat Configuration
     QDirstat_FOLDER=qdirstat
     QDirstat_PORT=5800
+
+    # mattermost Configuration
+    MATTERMOST_FOLDER=mattermost
+    MATTERMOST_PORT=8065
+    MATTERMOST_DB_USER=CHANGE_TO_MATTERMOST_DB_USER
+    MATTERMOST_DB_PASSWORD=CHANGE_TO_MATTERMOST_DB_PASSWORD
+    MATTERMOST_DB_NAME=mattermost
+    MATTERMOST_DB_PORT=5432
+
+    # hermes-agent Configuration (beta profile)
+    HERMES_FOLDER=hermes
+    HERMES_API_TIMEOUT=1800
+    HERMES_DASHBOARD=1
+    HERMES_DASHBOARD_PORT=9119
+    HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
+    HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=CHANGE_TO_HERMES_DASHBOARD_PASSWORD
+    HERMES_DASHBOARD_BASIC_AUTH_SECRET=CHANGE_TO_HERMES_DASHBOARD_SESSION_SECRET
+    HERMES_OPENROUTER_API_KEY=CHANGE_TO_OPENROUTER_API_KEY
+    HERMES_MATTERMOST_URL=http://mattermost:8065
+    HERMES_MATTERMOST_TOKEN=CHANGE_TO_MATTERMOST_BOT_TOKEN
+    HERMES_MATTERMOST_ALLOWED_USERS=CHANGE_TO_MATTERMOST_USER_ID
+    HERMES_MATTERMOST_ALLOWED_CHANNELS=CHANGE_TO_MATTERMOST_CHANNEL_IDS
+    HERMES_MATTERMOST_HOME_CHANNEL=CHANGE_TO_MATTERMOST_HOME_CHANNEL_ID
+    HERMES_MATTERMOST_REPLY_MODE=thread
+    HERMES_MATTERMOST_REQUIRE_MENTION=true
     ```
 3. Run the setup script:
     ```bash
@@ -112,13 +148,45 @@ Usage: make [command]
 Available commands:
   up                   Start the stack (pulls latest images & builds dashboard)
   down                 Stop the stack and remove containers
+  up-beta              Start the stack including beta services (e.g. Hermes Agent)
+  down-beta            Stop the stack including beta services
   restart              Restart the stack (runs down then up)
   logs                 View logs for all services (Ctrl+C to exit)
   pull                 Just pull images (useful for pre-loading updates)
   clean                Clean up dangling images to free space
+  permissions          Fix ownership of app volumes (CouchDB, Mattermost, Seerr)
   setup                Run initial setup scripts (directories & system service)
+  lint                 Run yamllint and shellcheck (and hadolint if installed)
+  validate             Validate docker-compose.yml with temporary placeholders when needed
+  test                 Run pytest validation suite
+  check                Run all local quality checks (lint, validate, test)
+  changelog            Generate CHANGELOG.md using git-cliff
+  release-notes        Preview unreleased release notes via git-cliff
   help                 Show this help message
 ```
+
+## Upgrading
+
+### From v1.3.0 or earlier
+
+CouchDB now runs as `${DEFAULT_PUID}:${DEFAULT_GUID}` instead of `5984:5984`. Existing `couchdb-data` and `couchdb-etc` bind-mount directories created by earlier versions (owned by `5984:5984` or `root`) will prevent the container from starting or writing data until ownership is updated. (`make permissions` also ensures expected non-root ownership for Mattermost `2000:2000` and Seerr `1000:1000`, since Seerr runs rootless as `node` and ignores `PUID`/`PGID`.)
+
+Run once before (or as part of) starting the updated stack:
+
+```bash
+make permissions
+```
+
+`make up` also invokes `make permissions` automatically on every start (including via the `homelab` systemd service).
+
+Verify CouchDB is healthy after starting:
+
+```bash
+docker logs couchdb-for-ols
+curl -fsS http://<your-server-ip>:5984/_up
+```
+
+A healthy instance responds with `{"status":"ok","seeds":{}}`.
 
 ## Configuration 
 ### Requirements
@@ -146,6 +214,21 @@ qBittorrent is a free, open-source torrent client that allows you to download an
 > To configure qBittorrent, navigate to http://your-server-ip:8080 in your browser. The default username is `admin` and password is `adminadmin`. If you plan to expose this to the internet, change these credentials immediately. Beyond that, minimal configuration is required.
 
 [Source](https://gist.github.com/rickklaasboer/b5c159833ff2971fccd32296d8ba2260#configuring-qbittorrent)
+
+### Mattermost
+
+Mattermost is a self-hosted team communication platform similar to Slack. It allows you to run private chat services across devices and integrates well with other tools.
+
+> The stack includes a PostgreSQL database and the Mattermost web application. The default port is `8065`.
+>
+> **To get started:**
+> 1. Ensure the `.env` file has the `MATTERMOST_*` variables filled out (folder, port, and database credentials).
+> 2. Run `make up` to start the services; the database and app will be created automatically.
+> 3. Navigate to http://<your-server-ip>:8065 in your browser to complete the Mattermost setup wizard.
+>
+> **Database:** By default the stack spins up a postgres container (`mattermost-db`) and you can alter credentials through the `.env` file. Remember to change `MATTERMOST_DB_PASSWORD` before exposing the service.
+>
+> **Note:** Mattermost stores its data under the `${MATTERMOST_FOLDER}` path inside the apps directory. Back it up along with your other services.
 
 ### Flaresolverr
 
@@ -191,6 +274,17 @@ Jackett is an API aggregator that allows applications like Sonarr, Radarr, and L
 
 [Source](https://gist.github.com/rickklaasboer/b5c159833ff2971fccd32296d8ba2260#configuring-jackett)
 
+### Threadfin
+
+Threadfin is a maintained fork of xTeVe (replacing the previously proposed xTeVe service, which is unmaintained upstream) and acts as an IPTV proxy that converts M3U playlists into an emulated SiliconDust HDHomeRun TV tuner interface. It integrates with Plex, Emby, and Jellyfin.
+
+> To configure Threadfin, navigate to `http://<your-server-ip>:34400/web` in your browser, add your M3U playlist, and configure any required XMLTV EPG sources.
+>
+> **Connecting Plex (Live TV & DVR) / Jellyfin / Emby:**
+> When configuring Live TV & DVR in Plex (or Live TV in Jellyfin/Emby), enter the tuner address as `http://<DEFAULT_LAN_IP>:34400` (using your host's LAN IP from `.env`). Because Plex runs with `network_mode: host`, Docker container DNS names (such as `http://threadfin:34400`) do not resolve from Plex.
+
+[Source](https://github.com/Threadfin/Threadfin)
+
 ### Sonarr
 
 Sonarr is a PVR (Personal Video Recorder) for TV shows that automates the process of finding, downloading, and organizing episodes. It works with torrent or Usenet clients like qBittorrent to keep your TV library up to date automatically.
@@ -228,11 +322,39 @@ Radarr is a movie collection manager for Usenet and BitTorrent users. It automat
 
 [Source](https://gist.github.com/rickklaasboer/b5c159833ff2971fccd32296d8ba2260#configuring-radarr)
 
-### Jellyseerr
+### Seerr
 
-Jellyseerr is a web application designed to manage and automate requests for media content in your home media server setup. It integrates seamlessly with Sonarr and Radarr, allowing users to request movies and TV shows easily. With a user-friendly interface, Jellyseerr provides features such as user authentication, notifications, and a comprehensive dashboard to track request statuses.
+Seerr is a web application designed to manage and automate requests for media content in your home media server setup. It integrates seamlessly with Sonarr and Radarr, allowing users to request movies and TV shows easily. With a user-friendly interface, Seerr provides features such as user authentication, notifications, and a comprehensive dashboard to track request statuses.
 
-> To configure Jellyseerr, navigate to http://your-server-ip:5055 in your browser and follow the setup wizard. Here is a reference guide for the setup steps:
+> **Access:** Navigate to `http://<your-server-ip>:5055` (or `${SEERR_PORT}` if customized in `.env`) in your browser and follow the setup wizard.
+>
+> **Config directory permissions & logging:**
+> - The official Seerr image (`ghcr.io/seerr-team/seerr`) runs rootless as the `node` user (`1000:1000`) and does **not** honor `PUID`/`PGID` environment variables (see [Why Seerr Doesn't Support PUID/PGID](https://docs.seerr.dev/blog/why-seerr-doesnt-support-puid-pgid/) and [Seerr Docker docs](https://docs.seerr.dev/getting-started/docker/)).
+> - Ensure `${DEFAULT_APPS_MOUNT}/${SEERR_FOLDER}/config` is owned by `1000:1000`:
+>   ```bash
+>   mkdir -p "${DEFAULT_APPS_MOUNT}/${SEERR_FOLDER}/config"
+>   docker run --rm -v "${DEFAULT_APPS_MOUNT}/${SEERR_FOLDER}/config:/data" alpine chown -R 1000:1000 /data
+>   ```
+> - Logging defaults to `info` via `SEERR_LOG_LEVEL` in `.env` (set to `debug` when troubleshooting).
+> - The container always listens internally on port `5055`; `SEERR_PORT` in `.env` controls only the published host port.
+>
+> **Migrating from Jellyseerr:**
+>
+> Follow the official [Seerr Migration Guide](https://docs.seerr.dev/migration-guide/) when upgrading an existing Jellyseerr setup:
+> 1. Stop the stack: `make down`
+> 2. Update `.env`: rename `JELLYSEERR_FOLDER` → `SEERR_FOLDER` (default `seerr`) and `JELLYSEERR_PORT` → `SEERR_PORT` (default `5055`), and add `SEERR_LOG_LEVEL=info`.
+> 3. Copy your existing Jellyseerr config directory to Seerr's config path (preserving data as a backup):
+>    ```bash
+>    mkdir -p "${DEFAULT_APPS_MOUNT}/seerr"
+>    cp -a "${DEFAULT_APPS_MOUNT}/jellyseerr/config" "${DEFAULT_APPS_MOUNT}/seerr/config"
+>    ```
+> 4. Ensure ownership is `1000:1000` so the rootless `node` user can read and write `/app/config`:
+>    ```bash
+>    docker run --rm -v "${DEFAULT_APPS_MOUNT}/seerr/config:/data" alpine chown -R 1000:1000 /data
+>    ```
+> 5. Start the stack: `make up` (Seerr automatically migrates your Jellyseerr database and settings on first startup).
+>
+> Here is a reference guide for the initial setup steps:
 >
 > **Plex Setup:**
 > 1. Sign in with your Plex account (the same one used to set up Plex)
@@ -275,11 +397,11 @@ Jellyseerr is a web application designed to manage and automate requests for med
 > 12. Click **Test** to verify the connection
 > 13. Click **Save**
 >
-> After setup, you'll see the Jellyseerr homepage. If needed, correct your Plex URL by going to Settings > Plex and updating the Web App URL to:
+> After setup, you'll see the Seerr homepage. If needed, correct your Plex URL by going to Settings > Plex and updating the Web App URL to:
 > - `http://your-server-ip:32400/web` (if not using a reverse proxy)
 > - `https://your-domain-name/web` (if using a reverse proxy)
 >
-> Jellyseerr is now ready to use!
+> Seerr is now ready to use!
 
 ### Connecting Jackett to Sonarr & Radarr
 
@@ -385,6 +507,8 @@ CouchDB is a NoSQL database that stores data in JSON format, useful for applicat
 3. Create databases as needed for your applications
 4. Most applications will handle CouchDB connection configuration internally
 
+> **Upgrade note (from v1.3.0 or earlier):** CouchDB now runs as `${DEFAULT_PUID}:${DEFAULT_GUID}` instead of `5984:5984`. Run `make permissions` (or `make up`) once to repair directory ownership on `couchdb-data` and `couchdb-etc`, then verify with `docker logs couchdb-for-ols` and `curl -fsS http://<your-server-ip>:5984/_up`.
+
 ### Pi-hole
 
 Pi-hole is a network-wide ad blocker and DNS server that protects all devices on your network from ads and malicious websites by filtering DNS requests.
@@ -414,6 +538,16 @@ Ollama is an open-source tool for running large language models (LLMs) locally o
 3. For web-based interfaces, you can integrate with tools like Open WebUI or use the API directly
 4. Models are stored in the `./apps/ollama` directory for persistence
 5. GPU acceleration is enabled if an NVIDIA GPU is available
+6. Context length (`65536`), keep-alive (`24h`), flash attention (`1`), and KV cache type (`q8_0`) are configurable in `.env` for long-context agents like Hermes
+
+### Hermes Agent (Beta)
+
+Hermes Agent is an opt-in autonomous AI agent (`nousresearch/hermes-agent:v0.23.3`) under the Docker Compose `beta` profile. Normal `make up` skips it; use `make up-beta` and `make down-beta` to run it alongside Ollama and Mattermost.
+
+- **Access URL (Web Dashboard):** `http://<DEFAULT_LAN_IP>:9119` (LAN-only, fail-closed Basic Auth via `HERMES_DASHBOARD_BASIC_AUTH_*`; set `HERMES_DASHBOARD=0` to run headless).
+- **LLM Setup:** Uses local Ollama (`http://ollama:11434/v1` at 64K context) by default, with optional per-turn OpenRouter cloud fallback (`HERMES_OPENROUTER_API_KEY` + `fallback_providers` in `config.yaml`).
+- **Mattermost Bot:** Connects outbound over the Compose network (`http://mattermost:8065`) with allowlisted 26-character Mattermost User IDs and Channel IDs.
+- **Setup & Security Guide:** Copy [`configs/hermes/config.yaml.example`](configs/hermes/config.yaml.example) to `${DEFAULT_APPS_MOUNT}/${HERMES_FOLDER}/config.yaml`, populate `.env`, pull an Ollama model, and run `make up-beta`. See [docs/hermes-agent.md](docs/hermes-agent.md) for VRAM-tier model picks, Mattermost bot setup, and hardening details.
 
 ### QDirStat
 
@@ -435,17 +569,33 @@ The custom dashboard serves as the home page for your HomeLab, providing quick a
 4. Update service URLs and links to match your setup and network configuration
 
 
+## Releases
+
+Changelogs are generated from [Conventional Commits](https://www.conventionalcommits.org/) using [`git-cliff`](https://git-cliff.org/) (`cliff.toml`). See [CHANGELOG.md](CHANGELOG.md) for the full release history.
+
+- Preview unreleased changes locally: `make release-notes`
+- Regenerate `CHANGELOG.md`: `make changelog`
+- Pushing a version tag (`v*.*.*`) triggers the [Release](.github/workflows/release.yml) workflow to publish a GitHub Release automatically.
+
 ## Sources
 
 - [rickklaasboer/how-to-setup-plex-with-sonarr-radarr-jackett-overseerr-and-qbittorrent-using-docker](https://gist.github.com/rickklaasboer/b5c159833ff2971fccd32296d8ba2260)
+
+## Project Agents
+
+AI coding assistants and maintainers working on this repository should start at [`AGENTS.md`](AGENTS.md) and review the role playbooks in [`.agents/`](.agents/README.md).
 
 ## License
 
 This project is provided as-is for personal use. Please ensure you comply with all applicable laws and regulations regarding media content and streaming in your jurisdiction.
 
+## Development
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the branching model, Conventional Commits guidelines, environment/documentation sync rules, and how to run local quality checks (`make check`).
+
 ## Contributing
 
-Contributions are welcome! Feel free to submit issues or pull requests to improve this project.
+Contributions are welcome! Feel free to submit issues or pull requests to improve this project. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## Acknowledgments
 

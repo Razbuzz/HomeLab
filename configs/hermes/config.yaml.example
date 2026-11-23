@@ -1,0 +1,89 @@
+# Hermes Agent Pre-Seeded Configuration (Hardened Homelab Template)
+# Copy this file to ${DEFAULT_APPS_MOUNT}/${HERMES_FOLDER}/config.yaml BEFORE first boot:
+#   mkdir -p "${DEFAULT_APPS_MOUNT}/${HERMES_FOLDER}"
+#   cp configs/hermes/config.yaml.example "${DEFAULT_APPS_MOUNT}/${HERMES_FOLDER}/config.yaml"
+#   chown -R "${DEFAULT_PUID}:${DEFAULT_GUID}" "${DEFAULT_APPS_MOUNT}/${HERMES_FOLDER}"
+#
+# Never store API keys or tokens directly in config.yaml; keep secrets in .env.
+
+# Primary Model — Local Ollama over Docker Compose network
+# Recommended tags by GPU VRAM tier (with OLLAMA_CONTEXT_LENGTH=65536):
+#   24 GB VRAM:    qwen3.8:27b (coding/agents), gemma4:31b (strict tool calling), or gemma4:26b (MoE speed)
+#   12-16 GB VRAM: gemma4:12b (balanced/multimodal) or qwen3.5:9b (fast/extra context headroom)
+#   8 GB VRAM:     qwen3.5:9b (tight) or gemma4:e4b / qwen3.5:4b (consider cloud primary if tool chains falter)
+model:
+  default: "gemma4:12b"
+  provider: "custom"
+  base_url: "http://ollama:11434/v1"
+  api_key: "no-key-required"
+
+# Hybrid Cloud Fallback (disabled by default so 100% local mode works with placeholder .env values).
+# To enable per-turn OpenRouter failover when local Ollama errors or times out:
+# 1. Set a real key for HERMES_OPENROUTER_API_KEY in .env
+# 2. Replace `fallback_providers: []` below with:
+#    fallback_providers:
+#      - provider: "openrouter"
+#        model: "deepseek/deepseek-v4.1-flash-1017"
+# 3. Verify with: docker exec hermes-agent hermes fallback check --live
+fallback_providers: []
+
+fallback:
+  min_switch_reset_seconds: 120
+
+auxiliary:
+  compression:
+    provider: "auto"
+  vision:
+    provider: "auto"
+
+# Execution & Runtime Hardening
+terminal:
+  backend: "local"
+  home_mode: "auto"
+
+agent:
+  gateway_timeout: 1800
+  local_stream_stale_timeout: 900
+  agent_cache:
+    memory_high_mb: "auto"
+
+tool_loop_guardrails:
+  warnings_enabled: true
+  hard_stop_enabled: true
+  non_interactive_hard_stop_enabled: true
+
+approvals:
+  mode: "smart"
+  timeout: 300
+  cron_mode: "deny"
+  single_query_mode: "deny"
+  unattended_mode: "deny"
+  mcp_reload_confirm: true
+  destructive_slash_confirm: true
+
+security:
+  redact_secrets: true
+  allow_private_urls: false
+  allow_lazy_installs: false
+  protected_instruction_files: true
+  # website_blocklist:
+  #   enabled: true
+  #   domains: ["*.lan", "*.local"]
+
+browser:
+  allow_private_urls: false
+
+# Gateway & Mattermost Behavior
+gateway:
+  allow_all_users: false
+
+unauthorized_dm_behavior: "ignore"
+group_sessions_per_user: true
+
+# Storage & Memory Tuning (Linux ext4/xfs/btrfs native mount -> WAL is safe)
+database:
+  journal_mode: "wal"
+
+runtime:
+  nofile_soft_limit: 4096
+  malloc_arena_max: 4
