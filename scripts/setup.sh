@@ -11,7 +11,7 @@ echo "net.ipv6.conf.all.forwarding=1" | sudo tee -a /etc/sysctl.conf
 # 1. Export variables from .env so the shell can use them
 set -a
 # shellcheck source=.env
-source .env
+. ./.env
 set +a
 
 # 2. Start containers (Docker reads .env automatically)
