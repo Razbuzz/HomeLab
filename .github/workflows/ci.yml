@@ -1,0 +1,205 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - main
+    types:
+      - opened
+      - edited
+      - synchronize
+      - reopened
+  push:
+    branches:
+      - develop
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install yamllint
+        run: pip install --no-cache-dir yamllint==1.35.1
+
+      - name: Lint YAML files
+        run: yamllint -c .yamllint.yml docker-compose.yml .yamllint.yml .github
+
+      - name: Lint shell scripts
+        run: |
+          shopt -s globstar nullglob
+          shellcheck -S warning scripts/**/*.sh
+
+      - name: Lint Dockerfiles
+        uses: hadolint/hadolint-action@v3
+        with:
+          recursive: true
+          dockerfiles-path: apps
+
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install --no-cache-dir -r tests/requirements.txt
+
+      - name: Validate Docker Compose configuration
+        env:
+          DEFAULT_STORAGE_MOUNT: /tmp/homelab-storage
+        run: docker compose config --quiet
+
+      - name: Run pytest suite
+        run: pytest -q tests
+
+  smoke:
+    name: Dashboard Smoke Test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build dashboard image and smoke test
+        run: |
+          set -euo pipefail
+          IMAGE_TAG="homelab-dashboard-smoke:${{ github.run_id }}"
+          CONTAINER_NAME="homelab-dashboard-smoke-${{ github.run_id }}"
+
+          cleanup() {
+            docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker build -t "${IMAGE_TAG}" apps/home-server-dashboard
+          docker run -d --name "${CONTAINER_NAME}" -p 127.0.0.1::80 "${IMAGE_TAG}"
+
+          PORT="$(docker port "${CONTAINER_NAME}" 80/tcp | head -n 1 | awk -F: '{print $NF}')"
+          echo "Dashboard listening on 127.0.0.1:${PORT}"
+
+          READY=false
+          for _ in $(seq 1 30); do
+            STATUS_CODE="$(curl -sS -o /tmp/dashboard.html -w '%{http_code}' "http://127.0.0.1:${PORT}/" || true)"
+            if [ "${STATUS_CODE}" = "200" ]; then
+              READY=true
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "${READY}" != "true" ]; then
+            echo "Dashboard did not return HTTP 200 within 30s"
+            docker logs "${CONTAINER_NAME}" || true
+            exit 1
+          fi
+
+          grep -q "<title>Home Server Dashboard</title>" /tmp/dashboard.html
+          grep -q "const services = \[" /tmp/dashboard.html
+          grep -q 'id="services"' /tmp/dashboard.html
+          echo "Dashboard smoke test passed"
+
+  conventional-commits:
+    name: Conventional Commits
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate PR title
+        uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout repository for commit history check
+        if: github.base_ref == 'develop'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate non-merge commit messages against develop
+        if: github.base_ref == 'develop'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          REGEX='^(feat|fix|docs|ci|chore|refactor|test|build|perf|style)(\([a-z0-9._-]+\))?!?: [a-z0-9].{0,71}$'
+          FAILED=0
+          while IFS= read -r sha; do
+            subject="$(git log -1 --format=%s "${sha}")"
+            if [[ ! "${subject}" =~ ${REGEX} ]] || [[ "${subject}" == *. ]]; then
+              echo "ERROR: Commit ${sha:0:7} does not follow Conventional Commits: ${subject}"
+              FAILED=1
+            else
+              echo "OK: ${sha:0:7} ${subject}"
+            fi
+          done < <(git rev-list --no-merges "${BASE_SHA}..${HEAD_SHA}")
+
+          if [ "${FAILED}" -ne 0 ]; then
+            echo "Commit subjects targeting develop must follow Conventional Commits 1.0:"
+            echo "  type(optional-scope): lowercase imperative summary (no trailing period)"
+            exit 1
+          fi
+
+  gate:
+    name: CI gate
+    needs:
+      - lint
+      - test
+      - smoke
+      - conventional-commits
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Evaluate required CI jobs
+        env:
+          LINT_RESULT: ${{ needs.lint.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          SMOKE_RESULT: ${{ needs.smoke.result }}
+          CC_RESULT: ${{ needs.conventional-commits.result }}
+        run: |
+          set -euo pipefail
+          echo "lint=${LINT_RESULT}"
+          echo "test=${TEST_RESULT}"
+          echo "smoke=${SMOKE_RESULT}"
+          echo "conventional-commits=${CC_RESULT}"
+
+          for job_status in \
+            "lint:${LINT_RESULT}" \
+            "test:${TEST_RESULT}" \
+            "smoke:${SMOKE_RESULT}" \
+            "conventional-commits:${CC_RESULT}"; do
+            job="${job_status%%:*}"
+            status="${job_status#*:}"
+            case "${status}" in
+              success|skipped)
+                ;;
+              *)
+                echo "CI gate failed because job '${job}' finished with status '${status}'"
+                exit 1
+                ;;
+            esac
+          done
+          echo "All CI gate checks passed."

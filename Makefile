@@ -1,4 +1,4 @@
-.PHONY: help up down restart logs pull clean setup
+.PHONY: help up down restart logs pull clean setup lint validate test check
 
 # ==========================================
 # 🛠️ COMMANDS
@@ -25,6 +25,28 @@ setup: ## Run initial setup scripts (directories & system service)
 	sh scripts/install_dependencies.sh
 	sh scripts/setup.sh
 	sh scripts/system-service/create_system_service.sh
+
+lint: ## Run yamllint and shellcheck (and hadolint if installed)
+	yamllint -c .yamllint.yml docker-compose.yml .yamllint.yml .github
+	shellcheck -S warning scripts/*.sh scripts/**/*.sh
+	@if command -v hadolint >/dev/null 2>&1; then \
+		hadolint apps/home-server-dashboard/Dockerfile; \
+	else \
+		echo "hadolint not installed; skipping Dockerfile lint"; \
+	fi
+
+validate: ## Validate docker-compose.yml with a temporary storage path if placeholder is set
+	@storage_mount="$$(grep -E '^DEFAULT_STORAGE_MOUNT=' .env | cut -d= -f2-)"; \
+	if [ -z "$$storage_mount" ] || [ "$$storage_mount" = "CHANGE_TO_STORAGE_PATH" ]; then \
+		DEFAULT_STORAGE_MOUNT=/tmp/homelab-storage docker compose config --quiet; \
+	else \
+		docker compose config --quiet; \
+	fi
+
+test: ## Run pytest validation suite
+	python3 -m pytest -q tests
+
+check: lint validate test ## Run all local quality checks (lint, validate, test)
 
 # ==========================================
 # ℹ️ HELP
