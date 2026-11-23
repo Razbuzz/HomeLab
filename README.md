@@ -127,6 +127,10 @@ Available commands:
   pull                 Just pull images (useful for pre-loading updates)
   clean                Clean up dangling images to free space
   setup                Run initial setup scripts (directories & system service)
+  lint                 Run yamllint and shellcheck (and hadolint if installed)
+  validate             Validate docker-compose.yml with temporary placeholders when needed
+  test                 Run pytest validation suite
+  check                Run all local quality checks (lint, validate, test)
   help                 Show this help message
 ```
 
