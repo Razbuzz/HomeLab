@@ -1,0 +1,18 @@
+services:
+  plex:
+    runtime: !reset null
+    deploy: !reset null
+    volumes: !override
+      - ${DEFAULT_APPS_MOUNT}/${PLEX_FOLDER}/config:/config
+      - ${DEFAULT_STORAGE_MOUNT}/${PLEX_FOLDER}/transcode:/transcode
+      - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}:/data
+
+  ollama:
+    runtime: !reset null
+    deploy: !reset null
+
+  pihole:
+    ports: !override
+      - "15353:53/tcp"
+      - "15353:53/udp"
+      - "${PI_HOLE_UI_PORT}:80/tcp"

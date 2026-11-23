@@ -68,3 +68,4 @@ Individual targets are also available:
 - `make lint` — run `yamllint`, `shellcheck`, and `hadolint` (if installed)
 - `make validate` — validate `docker-compose.yml` (using a temporary `DEFAULT_STORAGE_MOUNT` if `.env` still has the placeholder)
 - `make test` — run the `pytest` validation suite (`tests/`)
+- `make system-test` — run the full-stack end-to-end system test (`scripts/system-test.sh`): starts all 15 default services with `make up` using [`tests/docker-compose.ci.yml`](tests/docker-compose.ci.yml) in an isolated temp workspace, waits for every container to become `healthy`, verifies host-port HTTP responses, and tears down cleanly with `make down` (also runs as the required CI `System Test (make up)` stage)

@@ -1,4 +1,4 @@
-.PHONY: help up down up-beta down-beta restart logs pull clean setup permissions lint validate test check changelog release-notes
+.PHONY: help up down up-beta down-beta restart logs pull clean setup permissions lint validate test system-test check changelog release-notes
 
 # ==========================================
 # 🛠️ COMMANDS
@@ -27,7 +27,7 @@ pull: ## Just pull images (useful for pre-loading updates)
 clean: ## Clean up dangling images to free space
 	docker image prune -f
 
-permissions: ## Fix ownership of app volumes (CouchDB, Seerr)
+permissions: ## Fix ownership of app volumes (CouchDB, Maintainerr, Seerr)
 	bash scripts/fix-permissions.sh
 
 setup: ## Run initial setup scripts (directories & system service)
@@ -36,7 +36,7 @@ setup: ## Run initial setup scripts (directories & system service)
 	bash scripts/system-service/create_system_service.sh
 
 lint: ## Run yamllint and shellcheck (and hadolint if installed)
-	yamllint -c .yamllint.yml docker-compose.yml .yamllint.yml .github
+	yamllint -c .yamllint.yml docker-compose.yml tests/docker-compose.ci.yml .yamllint.yml .github
 	find scripts -type f -name '*.sh' -exec shellcheck -S warning {} +
 	@if command -v hadolint >/dev/null 2>&1; then \
 		hadolint apps/home-server-dashboard/Dockerfile; \
@@ -57,6 +57,9 @@ validate: ## Validate docker-compose.yml with temporary placeholders when needed
 
 test: ## Run pytest validation suite
 	python3 -m pytest -q tests
+
+system-test: ## Run full-stack system test (make up + healthchecks + make down)
+	bash scripts/system-test.sh
 
 check: lint validate test ## Run all local quality checks (lint, validate, test)
 
