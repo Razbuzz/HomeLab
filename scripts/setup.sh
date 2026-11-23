@@ -9,20 +9,23 @@ echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf
 echo "net.ipv6.conf.all.forwarding=1" | sudo tee -a /etc/sysctl.conf
 
 # 1. Export variables from .env so the shell can use them
-export $(grep -v '^#' .env | xargs)
+set -a
+# shellcheck source=.env
+. ./.env
+set +a
 
 # 2. Start containers (Docker reads .env automatically)
 docker compose up -d --pull always --build --remove-orphans
 
 # 3. Fix permissions using the variables
 # This uses DEFAULT_STORAGE_MOUNT (/mnt/usb) and PUID/GUID (1000)
-sudo chown -R $DEFAULT_PUID:$DEFAULT_GUID $DEFAULT_STORAGE_MOUNT
+sudo chown -R "$DEFAULT_PUID:$DEFAULT_GUID" "$DEFAULT_STORAGE_MOUNT"
 
 # Also ensure app-volume permissions (Mattermost + other services) are correct
-sudo chown -R $DEFAULT_PUID:$DEFAULT_GUID $DEFAULT_APPS_MOUNT
+sudo chown -R "$DEFAULT_PUID:$DEFAULT_GUID" "$DEFAULT_APPS_MOUNT"
 
 # Specifically set Mattermost directory ownership to 2000:2000
-sudo chown -R 2000:2000 $DEFAULT_APPS_MOUNT/mattermost
+sudo chown -R 2000:2000 "$DEFAULT_APPS_MOUNT/mattermost"
 
 # 4. Restart services to apply changes
 docker compose restart
