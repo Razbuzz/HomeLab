@@ -56,16 +56,168 @@ def parse_compose_yaml() -> dict:
     return data
 
 
+# Matches either a Compose `$$` escape or a `${VAR...}` interpolation.
+_COMPOSE_VAR_TOKEN_RE = re.compile(
+    r"\$\$|\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?+])([^}]*))?\}"
+)
+
+# Unspecified / wildcard bind addresses collide across all interfaces.
+_WILDCARD_HOST_IPS = {"", "0.0.0.0", "::", "[::]"}
+
+
+def _build_ci_env_map() -> dict[str, str]:
+    env_map = dict(parse_env_entries(ENV_FILE.read_text(encoding="utf-8")))
+    env_map["DEFAULT_STORAGE_MOUNT"] = "/tmp/homelab-storage"
+    env_map["DEFAULT_LAN_IP"] = "127.0.0.1"
+    return env_map
+
+
 def _substitute_env_vars(value: str, env_map: dict[str, str]) -> str:
-    pattern = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
-
     def replace(match: re.Match[str]) -> str:
-        name, default = match.group(1), match.group(2)
-        if name in env_map and env_map[name] != "":
-            return env_map[name]
-        return default if default is not None else ""
+        if match.group(0) == "$$":
+            return "$"
 
-    return pattern.sub(replace, value)
+        name = match.group(1)
+        op = match.group(2)
+        arg = match.group(3) if match.group(3) is not None else ""
+        is_set = name in env_map
+        is_non_empty = is_set and env_map[name] != ""
+
+        if op is None:
+            return env_map.get(name, "")
+        if op == ":-":
+            return env_map[name] if is_non_empty else _substitute_env_vars(arg, env_map)
+        if op == "-":
+            return env_map[name] if is_set else _substitute_env_vars(arg, env_map)
+        if op == ":+":
+            return _substitute_env_vars(arg, env_map) if is_non_empty else ""
+        if op == "+":
+            return _substitute_env_vars(arg, env_map) if is_set else ""
+        if op == ":?":
+            if not is_non_empty:
+                raise AssertionError(f"Required Compose variable '{name}' is unset or empty: {arg}")
+            return env_map[name]
+        if op == "?":
+            if not is_set:
+                raise AssertionError(f"Required Compose variable '{name}' is unset: {arg}")
+            return env_map[name]
+        return ""
+
+    return _COMPOSE_VAR_TOKEN_RE.sub(replace, value)
+
+
+def _find_required_compose_vars(compose_text: str) -> list[str]:
+    required: list[str] = []
+    for match in _COMPOSE_VAR_TOKEN_RE.finditer(compose_text):
+        if match.group(0) == "$$":
+            continue
+        var_name = match.group(1)
+        op = match.group(2)
+        # Only bare `${VAR}` and error-on-missing `${VAR:?...}` / `${VAR?...}` require
+        # `.env` definition; `${VAR:-default}`, `${VAR-default}`, `${VAR:+alt}`, `${VAR+alt}`
+        # all have fallback/conditional behavior when unset.
+        if op in (None, ":?", "?") and var_name not in required:
+            required.append(var_name)
+    return required
+
+
+def _normalize_host_ip(host_ip: str | None) -> str:
+    if host_ip is None:
+        return ""
+    cleaned = host_ip.strip()
+    if cleaned in _WILDCARD_HOST_IPS:
+        return ""
+    if cleaned.startswith("[") and cleaned.endswith("]"):
+        inner = cleaned[1:-1]
+        if inner in {"", "::"}:
+            return ""
+        return inner.lower()
+    return cleaned.lower()
+
+
+def _expand_port_range(port_spec: str | int) -> list[int]:
+    spec = str(port_spec).strip()
+    if not spec:
+        return []
+    if "-" in spec:
+        start_str, end_str = spec.split("-", 1)
+        assert start_str.isdigit() and end_str.isdigit(), f"Invalid port range: {port_spec!r}"
+        start, end = int(start_str), int(end_str)
+        assert start <= end, f"Descending port range is invalid: {port_spec!r}"
+        return list(range(start, end + 1))
+    assert spec.isdigit(), f"Invalid port specification: {port_spec!r}"
+    return [int(spec)]
+
+
+def _split_host_ip_and_port(host_part: str) -> tuple[str, str]:
+    """Split `<host_ip>:<host_port>` supporting bracketed IPv6 (`[::1]:8080`) and IPv4."""
+    if host_part.startswith("["):
+        closing = host_part.find("]")
+        assert closing != -1, f"Malformed IPv6 host binding: {host_part!r}"
+        host_ip = host_part[: closing + 1]
+        rest = host_part[closing + 1 :]
+        if rest == "":
+            return "", host_ip
+        assert rest.startswith(":"), f"Unexpected host binding syntax after IPv6 literal: {host_part!r}"
+        return _normalize_host_ip(host_ip), rest[1:]
+    if ":" in host_part:
+        host_ip, host_port = host_part.split(":", 1)
+        return _normalize_host_ip(host_ip), host_port
+    return "", host_part
+
+
+def _parse_compose_port_bindings(
+    raw_port: str | int | dict, env_map: dict[str, str]
+) -> list[tuple[str, int, str]]:
+    """Return list of `(normalized_host_ip, host_port, protocol)` for a Compose `ports:` entry."""
+    if isinstance(raw_port, dict):
+        published = raw_port.get("published")
+        if published in (None, ""):
+            return []
+        published_str = _substitute_env_vars(str(published), env_map).strip()
+        if not published_str:
+            return []
+        host_ip_raw = raw_port.get("host_ip")
+        host_ip = (
+            _normalize_host_ip(_substitute_env_vars(str(host_ip_raw), env_map))
+            if host_ip_raw is not None
+            else ""
+        )
+        proto_raw = raw_port.get("protocol", "tcp")
+        proto = _substitute_env_vars(str(proto_raw), env_map).strip().lower() or "tcp"
+        return [(host_ip, port, proto) for port in _expand_port_range(published_str)]
+
+    port_str = _substitute_env_vars(str(raw_port), env_map).strip()
+    if not port_str:
+        return []
+
+    proto = "tcp"
+    if "/" in port_str:
+        port_part, proto_part = port_str.rsplit("/", 1)
+        proto = proto_part.strip().lower() or "tcp"
+    else:
+        port_part = port_str
+
+    # Short syntax forms:
+    # - CONTAINER (no published host port; ephemeral host port)
+    # - HOST:CONTAINER
+    # - IP:HOST:CONTAINER
+    # - [IPv6]:HOST:CONTAINER
+    # - IP::CONTAINER (ephemeral host port on specific IP)
+    if ":" not in port_part:
+        return []
+
+    host_side, _container_side = port_part.rsplit(":", 1)
+    host_ip, host_port_spec = _split_host_ip_and_port(host_side)
+    if not host_port_spec.strip():
+        return []
+
+    return [(host_ip, port, proto) for port in _expand_port_range(host_port_spec)]
+
+
+def _host_bindings_conflict(ip_a: str, ip_b: str) -> bool:
+    """Wildcard bind (`""`) collides with any bind on the same port+protocol."""
+    return ip_a == "" or ip_b == "" or ip_a == ip_b
 
 
 def test_compose_validates_with_docker_compose() -> None:
@@ -87,8 +239,9 @@ def test_compose_validates_with_docker_compose() -> None:
 
     env = os.environ.copy()
     env["DEFAULT_STORAGE_MOUNT"] = "/tmp/homelab-storage"
+    env["DEFAULT_LAN_IP"] = "127.0.0.1"
     result = subprocess.run(
-        ["docker", "compose", "config", "--format", "json"],
+        ["docker", "compose", "--profile", "*", "config", "--format", "json"],
         cwd=REPO_ROOT,
         env=env,
         capture_output=True,
@@ -96,7 +249,7 @@ def test_compose_validates_with_docker_compose() -> None:
         check=False,
     )
     assert result.returncode == 0, (
-        f"docker compose config --format json failed (exit {result.returncode}):\n"
+        f"docker compose --profile '*' config --format json failed (exit {result.returncode}):\n"
         f"{result.stderr.strip()}"
     )
     parsed = json.loads(result.stdout)
@@ -107,17 +260,14 @@ def test_compose_vars_without_default_are_defined_in_env() -> None:
     env_keys = {k for k, _ in parse_env_entries(ENV_FILE.read_text(encoding="utf-8"))}
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
 
-    missing: list[str] = []
-    for match in re.finditer(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::(-|\?)([^}]*))?\}", compose_text):
-        var_name = match.group(1)
-        operator = match.group(2)
-        if operator == "-":
-            continue
-        if var_name not in env_keys and var_name not in missing:
-            missing.append(var_name)
+    missing = [
+        var_name
+        for var_name in _find_required_compose_vars(compose_text)
+        if var_name not in env_keys
+    ]
 
     assert not missing, (
-        "Variables referenced in docker-compose.yml without a :-default are missing from .env: "
+        "Variables referenced in docker-compose.yml without a default are missing from .env: "
         + ", ".join(missing)
     )
 
@@ -156,36 +306,26 @@ def test_readme_env_block_mirrors_env_file() -> None:
 
 
 def test_no_duplicate_published_host_ports() -> None:
-    env_map = dict(parse_env_entries(ENV_FILE.read_text(encoding="utf-8")))
-    env_map["DEFAULT_STORAGE_MOUNT"] = "/tmp/homelab-storage"
+    env_map = _build_ci_env_map()
     compose = parse_compose_yaml()
 
-    seen: dict[tuple[str, str], str] = {}
+    seen: dict[tuple[int, str], list[tuple[str, str]]] = {}
     duplicates: list[str] = []
 
     for service_name, service_cfg in compose["services"].items():
         for raw_port in service_cfg.get("ports") or []:
-            port_str = _substitute_env_vars(str(raw_port), env_map)
-            proto = "tcp"
-            if "/" in port_str:
-                port_part, proto = port_str.rsplit("/", 1)
-            else:
-                port_part = port_str
-            parts = port_part.split(":")
-            if len(parts) == 2:
-                host_port = parts[0]
-            elif len(parts) == 3:
-                host_port = f"{parts[0]}:{parts[1]}" if parts[0] else parts[1]
-            else:
-                continue
-
-            key = (host_port, proto.lower())
-            if key in seen:
-                duplicates.append(
-                    f"host port {host_port}/{proto} published by both '{seen[key]}' and '{service_name}'"
-                )
-            else:
-                seen[key] = service_name
+            for host_ip, host_port, proto in _parse_compose_port_bindings(raw_port, env_map):
+                port_key = (host_port, proto)
+                existing_bindings = seen.setdefault(port_key, [])
+                for existing_ip, existing_service in existing_bindings:
+                    if _host_bindings_conflict(existing_ip, host_ip):
+                        bind_a = existing_ip or "*"
+                        bind_b = host_ip or "*"
+                        duplicates.append(
+                            f"host port {host_port}/{proto} conflicts between "
+                            f"'{existing_service}' ({bind_a}) and '{service_name}' ({bind_b})"
+                        )
+                existing_bindings.append((host_ip, service_name))
 
     assert not duplicates, "Duplicate published host ports detected:\n" + "\n".join(duplicates)
 
@@ -211,18 +351,14 @@ def test_services_have_required_fields_and_unique_container_names() -> None:
 
 
 def test_dashboard_services_match_published_or_allowlisted_ports() -> None:
-    env_map = dict(parse_env_entries(ENV_FILE.read_text(encoding="utf-8")))
+    env_map = _build_ci_env_map()
     compose = parse_compose_yaml()
 
     published_ports: set[int] = set()
     for service_cfg in compose["services"].values():
         for raw_port in service_cfg.get("ports") or []:
-            port_str = _substitute_env_vars(str(raw_port), env_map)
-            port_part = port_str.rsplit("/", 1)[0]
-            parts = port_part.split(":")
-            host_port_str = parts[-2] if len(parts) >= 2 else ""
-            if host_port_str.isdigit():
-                published_ports.add(int(host_port_str))
+            for _host_ip, host_port, _proto in _parse_compose_port_bindings(raw_port, env_map):
+                published_ports.add(host_port)
 
     html_text = DASHBOARD_HTML.read_text(encoding="utf-8")
     array_match = re.search(r"const\s+services\s*=\s*\[(.*?)\];", html_text, re.DOTALL)
@@ -250,6 +386,45 @@ def test_dashboard_services_match_published_or_allowlisted_ports() -> None:
             )
 
     assert not bad_services, "Dashboard service port mismatches found:\n" + "\n".join(bad_services)
+
+
+def test_compose_helpers_handle_escapes_defaults_and_port_variants() -> None:
+    env = {"SET_EMPTY": "", "SET_VAL": "1234", "LAN_IP": "192.168.1.50"}
+
+    # $$ literal escape must not interpolate as an env var
+    assert _substitute_env_vars("$${SET_VAL} $$(cmd)", env) == "${SET_VAL} $(cmd)"
+    assert _find_required_compose_vars(
+        "$${LITERAL} ${OPT_COLON:-x} ${OPT_NO_COLON-y} ${ALT_COLON:+z} ${ALT_NO_COLON+w} ${REQ} ${REQ_ERR:?err} ${REQ_ERR2?err}"
+    ) == ["REQ", "REQ_ERR", "REQ_ERR2"]
+
+    # :- vs - and :+ vs +
+    assert _substitute_env_vars("${SET_EMPTY:-fallback}", env) == "fallback"
+    assert _substitute_env_vars("${SET_EMPTY-fallback}", env) == ""
+    assert _substitute_env_vars("${UNSET_VAR-fallback}", env) == "fallback"
+    assert _substitute_env_vars("${SET_EMPTY:+alt}", env) == ""
+    assert _substitute_env_vars("${SET_EMPTY+alt}", env) == "alt"
+    assert _substitute_env_vars("${SET_VAL:+alt}", env) == "alt"
+
+    # Short syntax: container-only, host:container, IPv4, IPv6, ranges, protocols
+    assert _parse_compose_port_bindings("80", env) == []
+    assert _parse_compose_port_bindings("8080:80", env) == [("", 8080, "tcp")]
+    assert _parse_compose_port_bindings("0.0.0.0:8080:80", env) == [("", 8080, "tcp")]
+    assert _parse_compose_port_bindings("[::]:8080:80", env) == [("", 8080, "tcp")]
+    assert _parse_compose_port_bindings("[::1]:8080:80/udp", env) == [("::1", 8080, "udp")]
+    assert _parse_compose_port_bindings("${LAN_IP}:${SET_VAL}:9119", env) == [("192.168.1.50", 1234, "tcp")]
+    assert _parse_compose_port_bindings("8000-8002:8000-8002", env) == [
+        ("", 8000, "tcp"),
+        ("", 8001, "tcp"),
+        ("", 8002, "tcp"),
+    ]
+    assert _parse_compose_port_bindings(
+        {"target": 80, "published": "8080-8081", "host_ip": "127.0.0.1", "protocol": "udp"},
+        env,
+    ) == [("127.0.0.1", 8080, "udp"), ("127.0.0.1", 8081, "udp")]
+
+    assert _host_bindings_conflict("", "127.0.0.1") is True
+    assert _host_bindings_conflict("127.0.0.1", "127.0.0.1") is True
+    assert _host_bindings_conflict("127.0.0.1", "192.168.1.50") is False
 
 
 def test_shell_scripts_use_bash_shebang_and_set_e() -> None:
