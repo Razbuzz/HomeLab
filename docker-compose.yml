@@ -185,11 +185,8 @@ services:
     init: true
     container_name: seerr
     environment:
-      - LOG_LEVEL=debug
-      - TZ='${DEFAULT_TIMEZONE}'
-      - PORT=${SEERR_PORT}
-      - PUID=${DEFAULT_PUID}
-      - PGID=${DEFAULT_GUID}
+      - LOG_LEVEL=${SEERR_LOG_LEVEL:-info}
+      - TZ=${DEFAULT_TIMEZONE}
     ports:
       - "${SEERR_PORT}:5055"
     volumes:
@@ -209,7 +206,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - LOG_HTML=${LOG_HTML:-false}
       - CAPTCHA_SOLVER=${CAPTCHA_SOLVER:-none}
-      - TZ='${DEFAULT_TIMEZONE}'
+      - TZ=${DEFAULT_TIMEZONE}
     ports:
       - "${FLARESOLVERR_PORT}:8191"
     restart: unless-stopped
