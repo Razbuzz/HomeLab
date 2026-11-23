@@ -100,6 +100,10 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     # ollama Configuration
     OLLAMA_FOLDER=ollama
     OLLAMA_PORT=11434
+    OLLAMA_CONTEXT_LENGTH=65536
+    OLLAMA_KEEP_ALIVE=24h
+    OLLAMA_FLASH_ATTENTION=1
+    OLLAMA_KV_CACHE_TYPE=q8_0
 
     # qdirstat Configuration
     QDirstat_FOLDER=qdirstat
@@ -112,6 +116,23 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     MATTERMOST_DB_PASSWORD=CHANGE_TO_MATTERMOST_DB_PASSWORD
     MATTERMOST_DB_NAME=mattermost
     MATTERMOST_DB_PORT=5432
+
+    # hermes-agent Configuration (beta profile)
+    HERMES_FOLDER=hermes
+    HERMES_API_TIMEOUT=1800
+    HERMES_DASHBOARD=1
+    HERMES_DASHBOARD_PORT=9119
+    HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
+    HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=CHANGE_TO_HERMES_DASHBOARD_PASSWORD
+    HERMES_DASHBOARD_BASIC_AUTH_SECRET=CHANGE_TO_HERMES_DASHBOARD_SESSION_SECRET
+    HERMES_OPENROUTER_API_KEY=CHANGE_TO_OPENROUTER_API_KEY
+    HERMES_MATTERMOST_URL=http://mattermost:8065
+    HERMES_MATTERMOST_TOKEN=CHANGE_TO_MATTERMOST_BOT_TOKEN
+    HERMES_MATTERMOST_ALLOWED_USERS=CHANGE_TO_MATTERMOST_USER_ID
+    HERMES_MATTERMOST_ALLOWED_CHANNELS=CHANGE_TO_MATTERMOST_CHANNEL_IDS
+    HERMES_MATTERMOST_HOME_CHANNEL=CHANGE_TO_MATTERMOST_HOME_CHANNEL_ID
+    HERMES_MATTERMOST_REPLY_MODE=thread
+    HERMES_MATTERMOST_REQUIRE_MENTION=true
     ```
 3. Run the setup script:
     ```bash
@@ -127,6 +148,8 @@ Usage: make [command]
 Available commands:
   up                   Start the stack (pulls latest images & builds dashboard)
   down                 Stop the stack and remove containers
+  up-beta              Start the stack including beta services (e.g. Hermes Agent)
+  down-beta            Stop the stack including beta services
   restart              Restart the stack (runs down then up)
   logs                 View logs for all services (Ctrl+C to exit)
   pull                 Just pull images (useful for pre-loading updates)
@@ -513,6 +536,16 @@ Ollama is an open-source tool for running large language models (LLMs) locally o
 3. For web-based interfaces, you can integrate with tools like Open WebUI or use the API directly
 4. Models are stored in the `./apps/ollama` directory for persistence
 5. GPU acceleration is enabled if an NVIDIA GPU is available
+6. Context length (`65536`), keep-alive (`24h`), flash attention (`1`), and KV cache type (`q8_0`) are configurable in `.env` for long-context agents like Hermes
+
+### Hermes Agent (Beta)
+
+Hermes Agent is an opt-in autonomous AI agent (`nousresearch/hermes-agent:v0.23.3`) under the Docker Compose `beta` profile. Normal `make up` skips it; use `make up-beta` and `make down-beta` to run it alongside Ollama and Mattermost.
+
+- **Access URL (Web Dashboard):** `http://<DEFAULT_LAN_IP>:9119` (LAN-only, fail-closed Basic Auth via `HERMES_DASHBOARD_BASIC_AUTH_*`; set `HERMES_DASHBOARD=0` to run headless).
+- **LLM Setup:** Uses local Ollama (`http://ollama:11434/v1` at 64K context) by default, with optional per-turn OpenRouter cloud fallback (`HERMES_OPENROUTER_API_KEY` + `fallback_providers` in `config.yaml`).
+- **Mattermost Bot:** Connects outbound over the Compose network (`http://mattermost:8065`) with allowlisted 26-character Mattermost User IDs and Channel IDs.
+- **Setup & Security Guide:** Copy [`configs/hermes/config.yaml.example`](configs/hermes/config.yaml.example) to `${DEFAULT_APPS_MOUNT}/${HERMES_FOLDER}/config.yaml`, populate `.env`, pull an Ollama model, and run `make up-beta`. See [docs/hermes-agent.md](docs/hermes-agent.md) for VRAM-tier model picks, Mattermost bot setup, and hardening details.
 
 ### QDirStat
 
