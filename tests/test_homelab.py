@@ -343,9 +343,16 @@ def test_ci_compose_override_is_valid_and_scoped() -> None:
     assert "/dev/dri" not in plex_sources, "plex CI override must strip /dev/dri device mount"
 
     pihole_ports = services["pihole"].get("ports") or []
-    assert any(
-        str(p.get("published")) == "15353" and p.get("target") == 53 for p in pihole_ports
-    ), "pihole CI override must remap host port 53 to 15353"
+    assert all(str(p.get("published")) != "53" for p in pihole_ports), (
+        "pihole CI override must replace (not merge) privileged host port 53"
+    )
+    for proto in ("tcp", "udp"):
+        assert any(
+            str(p.get("published")) == "15353"
+            and p.get("target") == 53
+            and str(p.get("protocol", "")).lower() == proto
+            for p in pihole_ports
+        ), f"pihole CI override must remap host port 53/{proto} to 15353/{proto}"
 
 
 def test_compose_vars_without_default_are_defined_in_env() -> None:

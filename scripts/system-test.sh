@@ -24,6 +24,7 @@ TMP_DIR="$(mktemp -d /tmp/homelab-system-test.XXXXXX)"
 ENV_PATH="${REPO_ROOT}/.env"
 ENV_BACKUP="${TMP_DIR}/.env.backup"
 ENV_BACKED_UP=false
+STACK_STARTED=0
 
 if [[ ! -f "${ENV_PATH}" ]]; then
   echo "Error: expected ${ENV_PATH} to exist." >&2
@@ -33,21 +34,34 @@ fi
 
 cleanup() {
   local exit_code=$?
+  local restore_ok=true
+  trap - EXIT
+  trap '' INT TERM
   set +e
 
+  unset COMPOSE_PROFILES
   export COMPOSE_FILE="docker-compose.yml:tests/docker-compose.ci.yml"
-  if [[ -f "${ENV_PATH}" ]]; then
+  if [[ "${STACK_STARTED}" -eq 1 ]] && [[ -f "${ENV_PATH}" ]]; then
     echo ""
     echo "==> Cleaning up stack via make down..."
     make -C "${REPO_ROOT}" down >/dev/null 2>&1 || true
   fi
 
-  if [[ "${ENV_BACKED_UP}" == true ]] && [[ -f "${ENV_BACKUP}" ]]; then
-    mv -f "${ENV_BACKUP}" "${ENV_PATH}"
-    echo "==> Restored ${ENV_PATH}"
+  if [[ "${ENV_BACKED_UP}" == true ]]; then
+    if [[ -f "${ENV_BACKUP}" ]]; then
+      if mv -f "${ENV_BACKUP}" "${ENV_PATH}"; then
+        echo "==> Restored ${ENV_PATH}"
+      else
+        restore_ok=false
+        echo "ERROR: failed to restore ${ENV_PATH}; preserved backup at ${ENV_BACKUP}" >&2
+      fi
+    else
+      restore_ok=false
+      echo "ERROR: expected .env backup missing at ${ENV_BACKUP}; preserving ${TMP_DIR}" >&2
+    fi
   fi
 
-  if [[ -d "${TMP_DIR}" ]]; then
+  if [[ "${restore_ok}" == true ]] && [[ -d "${TMP_DIR}" ]]; then
     if ! rm -rf "${TMP_DIR}" 2>/dev/null; then
       if command -v sudo >/dev/null 2>&1; then
         sudo rm -rf "${TMP_DIR}" || true
@@ -58,6 +72,8 @@ cleanup() {
   exit "${exit_code}"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 cp -a "${ENV_PATH}" "${ENV_BACKUP}"
 ENV_BACKED_UP=true
@@ -115,9 +131,11 @@ for key, val in overrides.items():
 Path(dst_path).write_text("\n".join(out_lines) + "\n", encoding="utf-8")
 PY
 
+unset COMPOSE_PROFILES
 export COMPOSE_FILE="docker-compose.yml:tests/docker-compose.ci.yml"
 
 echo "==> Starting default HomeLab stack via make up..."
+STACK_STARTED=1
 make -C "${REPO_ROOT}" up
 
 mapfile -t EXPECTED_SERVICES < <(cd "${REPO_ROOT}" && docker compose config --services)
@@ -179,7 +197,7 @@ printf '%-16s %-12s %-12s %-14s\n' "-------" "------" "------" "------------"
 for service in "${EXPECTED_SERVICES[@]}"; do
   IFS='|' read -r status health cid <<< "$(get_service_state "${service}")"
   short_cid="${cid:0:12}"
-  [[ -z "${short_cid}" ]] && short_cid="-"
+  short_cid="${short_cid:--}"
   printf '%-16s %-12s %-12s %-14s\n' "${service}" "${status}" "${health}" "${short_cid}"
 done
 
@@ -206,6 +224,26 @@ fi
 echo ""
 echo "==> Verifying host-port HTTP endpoints..."
 
+get_env_value() {
+  local key="$1"
+  local default_val="${2:-}"
+  python3 - "${ENV_PATH}" "${key}" "${default_val}" <<'PY'
+import sys
+from pathlib import Path
+
+env_path, target_key, default_val = sys.argv[1:4]
+val = default_val
+for raw_line in Path(env_path).read_text(encoding="utf-8").splitlines():
+    line = raw_line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    k, v = line.split("=", 1)
+    if k.strip() == target_key:
+        val = v.strip()
+print(val)
+PY
+}
+
 check_http_endpoint() {
   local service="$1"
   local url="$2"
@@ -216,7 +254,7 @@ check_http_endpoint() {
   for _ in $(seq 1 6); do
     code="$(curl -sS -L --max-time 10 -o "${tmp_body}" -w '%{http_code}' "${url}" || true)"
     if [[ "${code}" =~ ^2[0-9]{2}$ ]]; then
-      if [[ -n "${expected_substring}" ]] && ! grep -Fq "${expected_substring}" "${tmp_body}"; then
+      if [[ -n "${expected_substring}" ]] && ! grep -Fq -- "${expected_substring}" "${tmp_body}"; then
         echo "ERROR: ${service} (${url}) returned HTTP ${code} but body missed expected text: ${expected_substring}" >&2
         head -c 400 "${tmp_body}" >&2 || true
         echo "" >&2
@@ -236,35 +274,53 @@ check_http_endpoint() {
   return 1
 }
 
-check_http_endpoint "dashboard" "http://127.0.0.1:18080/" "Home Server Dashboard"
+dashboard_port="$(get_env_value DASHBOARD_PORT 18080)"
+qbittorrent_port="$(get_env_value QBITTORRENT_UI_PORT 8080)"
+filebrowser_port="$(get_env_value FILEBROWSER_UI_PORT 10000)"
+sonarr_port="$(get_env_value SONARR_PORT 8989)"
+radarr_port="$(get_env_value RADARR_PORT 7878)"
+jackett_port="$(get_env_value JACKETT_PORT 9117)"
+maintainerr_port="$(get_env_value MAINTAINERR_PORT 6246)"
+couchdb_port="$(get_env_value COUCHDB_PORT 5984)"
+pihole_port="$(get_env_value PI_HOLE_UI_PORT 12120)"
+seerr_port="$(get_env_value SEERR_PORT 5055)"
+flaresolverr_port="$(get_env_value FLARESOLVERR_PORT 8191)"
+ollama_port="$(get_env_value OLLAMA_PORT 11434)"
+qdirstat_port="$(get_env_value QDirstat_PORT 5800)"
+samba_port="$(get_env_value SAMBA_PORT 1445)"
+
+check_http_endpoint "dashboard" "http://127.0.0.1:${dashboard_port}/" "Home Server Dashboard"
 check_http_endpoint "plex" "http://127.0.0.1:32400/identity"
-check_http_endpoint "qbittorrent" "http://127.0.0.1:8080/"
-check_http_endpoint "filebrowser" "http://127.0.0.1:10000/health"
-check_http_endpoint "sonarr" "http://127.0.0.1:8989/ping"
-check_http_endpoint "radarr" "http://127.0.0.1:7878/ping"
-check_http_endpoint "jackett" "http://127.0.0.1:9117/health"
-check_http_endpoint "maintainerr" "http://127.0.0.1:6246/api/health/ready"
-check_http_endpoint "couchdb" "http://127.0.0.1:5984/_up" '"status":"ok"'
-check_http_endpoint "pihole" "http://127.0.0.1:12120/api/info/login"
-check_http_endpoint "seerr" "http://127.0.0.1:5055/api/v1/settings/public"
-check_http_endpoint "flaresolverr" "http://127.0.0.1:8191/health"
-check_http_endpoint "ollama" "http://127.0.0.1:11434/api/version"
-check_http_endpoint "qdirstat" "http://127.0.0.1:5800/site.webmanifest"
+check_http_endpoint "qbittorrent" "http://127.0.0.1:${qbittorrent_port}/"
+check_http_endpoint "filebrowser" "http://127.0.0.1:${filebrowser_port}/health"
+check_http_endpoint "sonarr" "http://127.0.0.1:${sonarr_port}/ping"
+check_http_endpoint "radarr" "http://127.0.0.1:${radarr_port}/ping"
+check_http_endpoint "jackett" "http://127.0.0.1:${jackett_port}/health"
+check_http_endpoint "maintainerr" "http://127.0.0.1:${maintainerr_port}/api/health/ready"
+check_http_endpoint "couchdb" "http://127.0.0.1:${couchdb_port}/_up" '"status":"ok"'
+check_http_endpoint "pihole" "http://127.0.0.1:${pihole_port}/api/info/login"
+check_http_endpoint "seerr" "http://127.0.0.1:${seerr_port}/api/v1/settings/public"
+check_http_endpoint "flaresolverr" "http://127.0.0.1:${flaresolverr_port}/health"
+check_http_endpoint "ollama" "http://127.0.0.1:${ollama_port}/api/version"
+check_http_endpoint "qdirstat" "http://127.0.0.1:${qdirstat_port}/site.webmanifest"
 
-python3 - <<'PY'
+python3 - "${samba_port}" <<'PY'
 import socket
+import sys
 
-with socket.create_connection(("127.0.0.1", 1445), timeout=5):
-    print("OK: samba (127.0.0.1:1445) -> TCP reachable")
+port = int(sys.argv[1])
+with socket.create_connection(("127.0.0.1", port), timeout=5):
+    print(f"OK: samba (127.0.0.1:{port}) -> TCP reachable")
 PY
 
 echo ""
 echo "==> Tearing down stack via make down..."
 make -C "${REPO_ROOT}" down
+STACK_STARTED=0
 
-remaining="$(cd "${REPO_ROOT}" && docker compose ps -q)"
+remaining="$(cd "${REPO_ROOT}" && docker compose ps -a -q)"
 if [[ -n "${remaining}" ]]; then
-  echo "ERROR: expected docker compose ps -q to be empty after make down, found: ${remaining}" >&2
+  echo "ERROR: expected docker compose ps -a -q to be empty after make down, found: ${remaining}" >&2
   exit 1
 fi
 
