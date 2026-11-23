@@ -350,6 +350,28 @@ def test_services_have_required_fields_and_unique_container_names() -> None:
         container_names[cname] = service_name
 
 
+def test_all_services_define_healthcheck() -> None:
+    compose = parse_compose_yaml()
+    services = compose["services"]
+    issues: list[str] = []
+
+    for service_name, service_cfg in services.items():
+        if not isinstance(service_cfg, dict):
+            issues.append(f"{service_name}: service definition must be a mapping")
+            continue
+        healthcheck = service_cfg.get("healthcheck")
+        if not isinstance(healthcheck, dict):
+            issues.append(f"{service_name}: missing 'healthcheck' mapping")
+            continue
+        if healthcheck.get("disable"):
+            issues.append(f"{service_name}: healthcheck must not be disabled")
+        for field in ("test", "interval", "timeout", "retries"):
+            if not healthcheck.get(field):
+                issues.append(f"{service_name}: healthcheck is missing non-empty '{field}'")
+
+    assert not issues, "Services missing valid healthcheck definitions:\n" + "\n".join(issues)
+
+
 def test_dashboard_services_match_published_or_allowlisted_ports() -> None:
     env_map = _build_ci_env_map()
     compose = parse_compose_yaml()
