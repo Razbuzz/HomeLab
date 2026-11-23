@@ -80,6 +80,10 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     MAINTAINERR_FOLDER=maintainerr
     MAINTAINERR_PORT=6246
 
+    # threadfin Configuration
+    THREADFIN_FOLDER=threadfin
+    THREADFIN_PORT=34400
+
     # couchdb Configuration
     COUCHDB_USER=CHANGE_TO_COUCHDB_USER
     COUCHDB_PASSWORD=CHANGE_TO_COUCHDB_PASSWORD
@@ -220,6 +224,17 @@ Jackett is an API aggregator that allows applications like Sonarr, Radarr, and L
 > **For indexers requiring Cloudflare bypass:** Enable the Flaresolverr option in the indexer settings and set the URL to `http://flaresolverr:8191/`.
 
 [Source](https://gist.github.com/rickklaasboer/b5c159833ff2971fccd32296d8ba2260#configuring-jackett)
+
+### Threadfin
+
+Threadfin is a maintained fork of xTeVe (replacing the previously proposed xTeVe service, which is unmaintained upstream) and acts as an IPTV proxy that converts M3U playlists into an emulated SiliconDust HDHomeRun TV tuner interface. It integrates with Plex, Emby, and Jellyfin.
+
+> To configure Threadfin, navigate to `http://<your-server-ip>:34400/web` in your browser, add your M3U playlist, and configure any required XMLTV EPG sources.
+>
+> **Connecting Plex (Live TV & DVR) / Jellyfin / Emby:**
+> When configuring Live TV & DVR in Plex (or Live TV in Jellyfin/Emby), enter the tuner address as `http://<DEFAULT_LAN_IP>:34400` (using your host's LAN IP from `.env`). Because Plex runs with `network_mode: host`, Docker container DNS names (such as `http://threadfin:34400`) do not resolve from Plex.
+
+[Source](https://github.com/Threadfin/Threadfin)
 
 ### Sonarr
 
