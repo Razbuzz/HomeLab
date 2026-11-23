@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (defaults to the latest v*.*.* tag)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate release tag
+        id: tag
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            TAG="${INPUT_TAG}"
+            if [ -z "${TAG}" ]; then
+              TAG="$(git tag --list 'v*.*.*' --sort=-v:refname | head -n 1)"
+            fi
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          if [ -z "${TAG}" ]; then
+            echo "::error::Could not determine a release tag (pass inputs.tag or push a v*.*.* tag)."
+            exit 1
+          fi
+
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid release tag '${TAG}'. Expected semantic version tag like v1.2.3 or v1.2.3-rc.1."
+            exit 1
+          fi
+
+          if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "::error::Tag 'refs/tags/${TAG}' does not exist in this repository."
+            exit 1
+          fi
+
+          if [[ "${TAG}" == *-* ]]; then
+            PRERELEASE="true"
+          else
+            PRERELEASE="false"
+          fi
+
+          echo "name=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${PRERELEASE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Preserve cliff.toml and checkout release tag
+        shell: bash
+        env:
+          TAG: ${{ steps.tag.outputs.name }}
+        run: |
+          set -euo pipefail
+          cp cliff.toml "${RUNNER_TEMP}/cliff.toml"
+          git checkout --detach "refs/tags/${TAG}"
+
+      - name: Generate release notes
+        id: git-cliff
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: ${{ runner.temp }}/cliff.toml
+          args: --current --strip header
+        env:
+          OUTPUT: release_body.md
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: ${{ steps.tag.outputs.name }}
+          body_path: ${{ steps.git-cliff.outputs.changelog }}
+          draft: false
+          prerelease: ${{ steps.tag.outputs.prerelease }}
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,4 +1,4 @@
-.PHONY: help up down up-beta down-beta restart logs pull clean setup permissions lint validate test check
+.PHONY: help up down up-beta down-beta restart logs pull clean setup permissions lint validate test check changelog release-notes
 
 # ==========================================
 # 🛠️ COMMANDS
@@ -59,6 +59,20 @@ test: ## Run pytest validation suite
 	python3 -m pytest -q tests
 
 check: lint validate test ## Run all local quality checks (lint, validate, test)
+
+changelog: ## Generate CHANGELOG.md using git-cliff
+	@if command -v git-cliff >/dev/null 2>&1; then \
+		git-cliff --config cliff.toml -o CHANGELOG.md; \
+	else \
+		docker run --rm -v "$$PWD:/app" -w /app orhunp/git-cliff:2.14.2 --config cliff.toml -o CHANGELOG.md; \
+	fi
+
+release-notes: ## Preview unreleased release notes via git-cliff
+	@if command -v git-cliff >/dev/null 2>&1; then \
+		git-cliff --config cliff.toml --bump --unreleased; \
+	else \
+		docker run --rm -v "$$PWD:/app" -w /app orhunp/git-cliff:2.14.2 --config cliff.toml --bump --unreleased; \
+	fi
 
 # ==========================================
 # ℹ️ HELP
