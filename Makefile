@@ -1,4 +1,4 @@
-.PHONY: help up down up-beta down-beta restart logs pull clean setup permissions lint validate test system-test check changelog release-notes
+.PHONY: help up down up-beta down-beta restart logs pull clean setup permissions backup upgrade rollback lint validate test system-test check changelog release-notes
 
 # ==========================================
 # 🛠️ COMMANDS
@@ -34,6 +34,15 @@ setup: ## Run initial setup scripts (directories & system service)
 	bash scripts/install_dependencies.sh
 	bash scripts/setup.sh
 	bash scripts/system-service/create_system_service.sh
+
+backup: ## Create verified backup of .env and app data (BACKUP=<dir>)
+	@bash scripts/backup.sh $(if $(BACKUP),--backup-dir "$(BACKUP)")
+
+upgrade: ## Back up, merge .env, upgrade to TARGET=<ref> (default: latest tag)
+	@bash scripts/upgrade.sh $(if $(TARGET),--target "$(TARGET)") $(if $(BACKUP),--backup-dir "$(BACKUP)")
+
+rollback: ## Restore HomeLab from backup BACKUP=<dir> (default: latest)
+	@bash scripts/rollback.sh $(if $(BACKUP),--backup "$(BACKUP)")
 
 lint: ## Run yamllint and shellcheck (and hadolint if installed)
 	yamllint -c .yamllint.yml docker-compose.yml tests/docker-compose.ci.yml .yamllint.yml .github

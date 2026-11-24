@@ -137,6 +137,9 @@ Available commands:
   clean                Clean up dangling images to free space
   permissions          Fix ownership of app volumes (CouchDB, Maintainerr, Seerr)
   setup                Run initial setup scripts (directories & system service)
+  backup               Create verified backup of .env and app data (BACKUP=<dir>)
+  upgrade              Back up, merge .env, upgrade to TARGET=<ref> (default: latest tag)
+  rollback             Restore HomeLab from backup BACKUP=<dir> (default: latest)
   lint                 Run yamllint and shellcheck (and hadolint if installed)
   validate             Validate docker-compose.yml with temporary placeholders when needed
   test                 Run pytest validation suite
@@ -150,6 +153,29 @@ Available commands:
 > **Tip:** All services define Docker `healthcheck` probes. Run `docker compose ps` (or `docker compose --profile '*' ps`) to inspect each container's live health status.
 
 ## Upgrading
+
+HomeLab provides automated backup, non-destructive `.env` merging, live health verification, and automatic/manual rollback commands so upgrades never overwrite your secrets or persistent service data:
+
+```bash
+# Preview target tag, disk headroom, and .env merge without making changes:
+bash scripts/upgrade.sh --dry-run
+
+# Create a verified backup, merge .env, upgrade to the latest release, and verify healthchecks:
+make upgrade
+
+# Upgrade to a specific release tag or branch:
+make upgrade TARGET=v1.5.0
+
+# Create a standalone backup anytime:
+make backup
+
+# Roll back manually to the latest (or a specific) verified backup:
+make rollback
+make rollback BACKUP=/path/to/backup
+```
+
+- **Upgrading from an older commit (pre-`v1.5.0`, e.g. `ec3a6250`)?** Follow the step-by-step bootstrap instructions in [docs/upgrading.md](docs/upgrading.md) to extract the upgrade scripts into `/tmp/hl-up/` and upgrade cleanly without `git pull` conflicts on `.env`.
+- See [docs/upgrading.md](docs/upgrading.md) for backup contents/exclusions, `.env` merge rules, and automatic rollback details.
 
 ### From v1.3.0 or earlier
 

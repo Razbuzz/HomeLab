@@ -10,10 +10,11 @@ Key components:
 
 - `docker-compose.yml` — Service definitions, volume mounts, ports, GPU reservations, and restart policies.
 - `.env` — Environment configuration template with `CHANGE_TO_*` placeholders for secrets and host-specific values.
-- `Makefile` — Stack lifecycle (`up`, `down`, `restart`, `logs`, `pull`, `clean`, `setup`) and quality checks (`lint`, `validate`, `test`, `system-test`, `check`), plus `changelog` when release tooling is present.
-- `scripts/` — Host bootstrap, apt dependency installation, and systemd service setup scripts.
+- `Makefile` — Stack lifecycle (`up`, `down`, `restart`, `logs`, `pull`, `clean`, `setup`), safe ops (`backup`, `upgrade`, `rollback`), and quality checks (`lint`, `validate`, `test`, `system-test`, `check`), plus `changelog` when release tooling is present.
+- `scripts/` — Host bootstrap, apt dependency installation, systemd service setup, and safe backup/upgrade/rollback scripts (`backup.sh`, `upgrade.sh`, `rollback.sh`, `merge-env.py`).
+- `docs/` — Operator guides including [`docs/upgrading.md`](docs/upgrading.md) and [`docs/hermes-agent.md`](docs/hermes-agent.md).
 - `apps/home-server-dashboard/` — Custom Nginx static dashboard (`html/index.html`) listing web services and ports.
-- `tests/` — Automated pytest suite validating compose rendering, `.env` ↔ `README.md` parity, port uniqueness, dashboard port consistency, and script safety.
+- `tests/` — Automated pytest suite validating compose rendering, `.env` ↔ `README.md` parity, port uniqueness, dashboard port consistency, script safety, and upgrade/rollback workflows.
 
 ## Repository Layout
 
@@ -32,8 +33,9 @@ Key components:
 │   └── home-server-dashboard/        # Nginx dashboard Dockerfile and html/index.html
 ├── docs/
 │   ├── BACKLOG.md                    # Planned roadmap items & architecture specs
-│   └── hermes-agent.md               # Hermes Agent (beta) setup & hardening guide
-├── scripts/                          # Host setup & systemd unit scripts
+│   ├── hermes-agent.md               # Hermes Agent (beta) setup & hardening guide
+│   └── upgrading.md                  # Safe upgrade, backup, and rollback guide
+├── scripts/                          # Host setup, systemd unit, and backup/upgrade/rollback scripts
 ├── tests/                            # Pytest validation suite
 ├── .env                              # Environment defaults and secret placeholders
 ├── Makefile                          # Operator and CI commands
