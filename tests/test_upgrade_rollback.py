@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import os
 import shutil
+import signal
 import stat
 import subprocess
+import tarfile
+import time
 from pathlib import Path
 
 import pytest
@@ -499,3 +504,473 @@ def test_safety_guards_dirty_repo_backup_inside_repo_and_tampered_checksums(tmp_
     # Repo HEAD and .env must remain completely untouched after checksum failure
     assert _run(["git", "-C", str(repo_dir), "rev-parse", "HEAD"]).stdout.strip() == upgraded_sha
     assert (repo_dir / ".env").read_bytes() == upgraded_env
+
+
+def test_merge_env_repeated_run_idempotency(tmp_path: Path) -> None:
+    template = tmp_path / "template.env"
+    initial_current = tmp_path / "initial.env"
+    merged_once = tmp_path / "merged_once.env"
+    merged_twice = tmp_path / "merged_twice.env"
+
+    template.write_text(
+        "\n".join(
+            [
+                "# General Configuration",
+                "DEFAULT_STORAGE_MOUNT=CHANGE_TO_STORAGE_PATH",
+                "",
+                "# seerr Configuration",
+                "SEERR_FOLDER=seerr",
+                "SEERR_PORT=5055",
+                "SEERR_LOG_LEVEL=info",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    initial_current.write_text(
+        "\n".join(
+            [
+                "DEFAULT_STORAGE_MOUNT=/mnt/media",
+                "JELLYSEERR_FOLDER=custom-seerr",
+                "MATTERMOST_DB_PASSWORD=old$secret;1",
+                "CUSTOM_VAR=keep_me",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    _run(
+        [
+            "python3",
+            str(MERGE_ENV_SCRIPT),
+            "--template",
+            str(template),
+            "--current",
+            str(initial_current),
+            "--output",
+            str(merged_once),
+            "--check-placeholders",
+        ]
+    )
+    _run(
+        [
+            "python3",
+            str(MERGE_ENV_SCRIPT),
+            "--template",
+            str(template),
+            "--current",
+            str(merged_once),
+            "--output",
+            str(merged_twice),
+            "--check-placeholders",
+        ]
+    )
+
+    once_bytes = merged_once.read_bytes()
+    twice_bytes = merged_twice.read_bytes()
+    assert once_bytes == twice_bytes
+    once_text = once_bytes.decode("utf-8")
+    assert once_text.count("# Preserved legacy / custom variables") == 1
+    assert "MATTERMOST_DB_PASSWORD=old$secret;1\n" in once_text
+    assert "CUSTOM_VAR=keep_me\n" in once_text
+
+
+def test_rollback_detects_foreign_uids_and_recovers_staged_data_without_sudo(tmp_path: Path) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("Foreign-UID non-root elevation guard only applies when running as non-root")
+
+    repo_dir, bootstrap_dir, _storage_dir, backup_parent = _seed_legacy_repo_clone(tmp_path)
+    backup_dir = backup_parent / "foreign-uid-snap"
+
+    _run(
+        [
+            "bash",
+            str(bootstrap_dir / "backup.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--backup-dir",
+            str(backup_dir),
+            "--skip-docker",
+        ]
+    )
+
+    # Replace apps.tar.gz with a synthetic archive containing a foreign UID/GID entry (5984:5984)
+    # and update SHA256SUMS accordingly so checksum validation succeeds.
+    synthetic_tar = backup_dir / "apps.tar.gz"
+    with tarfile.open(synthetic_tar, "w:gz") as tf:
+        ti = tarfile.TarInfo("./couch-db/couchdb-data/foreign.couch")
+        payload = b"foreign-uid-payload"
+        ti.size = len(payload)
+        ti.uid = 5984
+        ti.gid = 5984
+        ti.mode = 0o644
+        tf.addfile(ti, io.BytesIO(payload))
+    synthetic_tar.chmod(0o600)
+
+    checksum_lines: list[str] = []
+    for fname in (".env", "metadata.env", "apps.tar.gz", "maintainerr-data.tar.gz"):
+        fpath = backup_dir / fname
+        if fpath.is_file():
+            digest = hashlib.sha256(fpath.read_bytes()).hexdigest()
+            checksum_lines.append(f"{digest}  {fname}")
+    (backup_dir / "SHA256SUMS").write_text("\n".join(checksum_lines) + "\n", encoding="utf-8")
+
+    pre_rollback_prefs = (repo_dir / "apps" / "plex" / "config" / "Preferences.xml").read_bytes()
+
+    # Run rollback with a restricted PATH containing essential tools EXCEPT sudo, simulating
+    # a non-root environment where sudo is unavailable.
+    fake_bin = tmp_path / "no-sudo-bin"
+    fake_bin.mkdir()
+    for tool in ("bash", "git", "tar", "gzip", "sha256sum", "awk", "realpath", "dirname", "basename", "mktemp", "mv", "rm", "mkdir", "chmod", "cp", "id", "cat", "grep", "tail", "cut", "tee", "python3"):
+        found = shutil.which(tool)
+        if found:
+            os.symlink(found, fake_bin / tool)
+
+    rb = _run(
+        [
+            "bash",
+            str(bootstrap_dir / "rollback.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--backup",
+            str(backup_dir),
+            "--skip-docker",
+            "--yes",
+        ],
+        env={"PATH": str(fake_bin)},
+        check=False,
+    )
+    assert rb.returncode != 0
+    assert "root privileges or 'sudo' are required" in rb.stderr
+    # Staged apps/ data must be restored back into apps/ rather than left stranded or overwritten
+    assert (repo_dir / "apps" / "plex" / "config" / "Preferences.xml").read_bytes() == pre_rollback_prefs
+    assert not list((repo_dir).glob(".homelab-restore-stage.*"))
+    assert not (repo_dir / "apps" / "couch-db" / "couchdb-data" / "foreign.couch").exists()
+
+    # Now add a shim sudo that records the exact command invoked for foreign-UID extraction
+    # (stripping --same-owner only after logging so unprivileged pytest can complete extraction)
+    sudo_log = tmp_path / "sudo-calls.log"
+    shim_sudo = fake_bin / "sudo"
+    shim_sudo.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "{sudo_log}"
+if [[ "$1" == "tar" ]]; then
+  args=()
+  for a in "${{@:2}}"; do
+    [[ "$a" == "--same-owner" ]] && continue
+    args+=("$a")
+  done
+  exec "{shutil.which('tar')}" "${{args[@]}}"
+fi
+exec "$@"
+""",
+        encoding="utf-8",
+    )
+    shim_sudo.chmod(0o755)
+    rb_sudo = _run(
+        [
+            "bash",
+            str(bootstrap_dir / "rollback.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--backup",
+            str(backup_dir),
+            "--skip-docker",
+            "--yes",
+        ],
+        env={"PATH": str(fake_bin)},
+    )
+    assert "Rollback completed successfully" in rb_sudo.stdout
+    sudo_calls = sudo_log.read_text(encoding="utf-8").splitlines()
+    assert any(
+        "tar --same-owner --numeric-owner -xzpf" in line and "apps.tar.gz" in line
+        for line in sudo_calls
+    )
+    assert (repo_dir / "apps" / "couch-db" / "couchdb-data" / "foreign.couch").read_bytes() == b"foreign-uid-payload"
+
+
+def test_upgrade_target_branch_resolves_origin_over_stale_local_branch(tmp_path: Path) -> None:
+    repo_dir, bootstrap_dir, _storage_dir, backup_parent = _seed_legacy_repo_clone(tmp_path)
+
+    # Create a bare "origin" remote where origin/main is ahead of local main (LEGACY_COMMIT)
+    origin_dir = tmp_path / "origin.git"
+    _run(["git", "init", "--bare", str(origin_dir)])
+    _run(["git", "-C", str(repo_dir), "remote", "set-url", "origin", str(origin_dir)])
+    _run(["git", "-C", str(repo_dir), "push", "origin", "target-release:refs/heads/main"])
+    target_sha = _run(["git", "-C", str(repo_dir), "rev-parse", "target-release"]).stdout.strip()
+
+    # Local 'main' is still at LEGACY_COMMIT and checked out
+    assert _run(["git", "-C", str(repo_dir), "rev-parse", "HEAD"]).stdout.strip() == LEGACY_COMMIT
+    assert _run(["git", "-C", str(repo_dir), "rev-parse", "main"]).stdout.strip() == LEGACY_COMMIT
+
+    env_vars = {"HOMELAB_BACKUP_DIR": str(backup_parent)}
+
+    dry = _run(
+        [
+            "bash",
+            str(bootstrap_dir / "upgrade.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--target",
+            "main",
+            "--skip-docker",
+            "--dry-run",
+        ],
+        env=env_vars,
+    )
+    assert f"Target ref:     main ({target_sha[:8]})" in dry.stdout
+    assert "Nothing to do" not in dry.stdout
+    assert _run(["git", "-C", str(repo_dir), "rev-parse", "HEAD"]).stdout.strip() == LEGACY_COMMIT
+
+    up = _run(
+        [
+            "bash",
+            str(bootstrap_dir / "upgrade.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--target",
+            "main",
+            "--skip-docker",
+        ],
+        env=env_vars,
+    )
+    assert "Upgrade complete!" in up.stdout
+    assert f"To:     {target_sha[:8]} (main)" in up.stdout
+    assert _run(["git", "-C", str(repo_dir), "rev-parse", "HEAD"]).stdout.strip() == target_sha
+    assert _run(["git", "-C", str(repo_dir), "rev-parse", "main"]).stdout.strip() == target_sha
+
+
+def test_backup_refuses_ancestor_nonempty_missing_apps_and_recovers_stack_on_failure(tmp_path: Path) -> None:
+    repo_dir, bootstrap_dir, _storage_dir, _backup_parent = _seed_legacy_repo_clone(tmp_path)
+
+    # 1. Refuse ancestor directory of repo / apps
+    ancestor_res = _run(
+        [
+            "bash",
+            str(bootstrap_dir / "backup.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--backup-dir",
+            str(tmp_path),
+            "--skip-docker",
+        ],
+        check=False,
+    )
+    assert ancestor_res.returncode != 0
+    assert "must NOT be an ancestor" in ancestor_res.stderr
+
+    # 2. Refuse existing non-empty custom backup directory (and do not touch its contents/permissions)
+    nonempty_dir = tmp_path / "existing-backup"
+    nonempty_dir.mkdir()
+    (nonempty_dir / "keep.txt").write_text("do-not-touch", encoding="utf-8")
+    nonempty_res = _run(
+        [
+            "bash",
+            str(bootstrap_dir / "backup.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--backup-dir",
+            str(nonempty_dir),
+            "--skip-docker",
+        ],
+        check=False,
+    )
+    assert nonempty_res.returncode != 0
+    assert "already exists and is not empty" in nonempty_res.stderr
+    assert (nonempty_dir / "keep.txt").read_text(encoding="utf-8") == "do-not-touch"
+
+    # 3. Validate missing APPS_MOUNT pre-flight (both dry-run and live) before touching Docker
+    shutil.rmtree(repo_dir / "apps")
+    missing_apps_res = _run(
+        [
+            "bash",
+            str(bootstrap_dir / "backup.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--backup-dir",
+            str(tmp_path / "unused-snap"),
+            "--dry-run",
+        ],
+        check=False,
+    )
+    assert missing_apps_res.returncode != 0
+    assert "APPS_MOUNT directory not found" in missing_apps_res.stderr
+
+    # 4. Mid-backup failure with --no-restart must still restart the stopped stack during cleanup
+    (repo_dir / "apps" / "plex").mkdir(parents=True, exist_ok=True)
+    (repo_dir / "apps" / "plex" / "cfg.txt").write_text("ok", encoding="utf-8")
+
+    docker_log = tmp_path / "docker-calls.log"
+    fake_bin = tmp_path / "fake-docker-bin"
+    fake_bin.mkdir()
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "{docker_log}"
+exit 0
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+
+    # Make tar fail mid-backup when invoked to create apps.tar.gz (while allowing tar -tzf / system tools)
+    real_tar = shutil.which("tar")
+    assert real_tar is not None
+    fake_tar = fake_bin / "tar"
+    fake_tar.write_text(
+        f"""#!/usr/bin/env bash
+for arg in "$@"; do
+  if [[ "$arg" == *apps.tar.gz* ]]; then
+    exit 2
+  fi
+done
+exec "{real_tar}" "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_tar.chmod(0o755)
+
+    custom_snap = tmp_path / "custom-snap"
+    fail_backup = _run(
+        [
+            "bash",
+            str(bootstrap_dir / "backup.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--backup-dir",
+            str(custom_snap),
+            "--no-restart",
+        ],
+        env={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        check=False,
+    )
+    assert fail_backup.returncode != 0
+    assert not custom_snap.exists()
+    assert not (tmp_path / "latest").exists()
+    logged_calls = docker_log.read_text(encoding="utf-8").splitlines()
+    assert any("compose --profile * down" in line for line in logged_calls)
+    assert any("compose up -d --remove-orphans" in line for line in logged_calls)
+
+    # Also verify custom --backup-dir does NOT create a 'latest' symlink in its parent on success
+    fake_tar.unlink()
+    ok_custom = _run(
+        [
+            "bash",
+            str(bootstrap_dir / "backup.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--backup-dir",
+            str(custom_snap),
+            "--skip-docker",
+        ]
+    )
+    assert "Backup verified successfully." in ok_custom.stdout
+    assert not (tmp_path / "latest").exists()
+
+
+def test_upgrade_sighup_and_double_sigterm_trigger_uninterrupted_rollback(tmp_path: Path) -> None:
+    repo_dir, bootstrap_dir, storage_dir, backup_parent = _seed_legacy_repo_clone(tmp_path)
+    pre_env = (repo_dir / ".env").read_bytes()
+    pre_prefs = (repo_dir / "apps" / "plex" / "config" / "Preferences.xml").read_bytes()
+    pre_maint = (storage_dir / "maintainerr" / "data" / "maintainerr.sqlite").read_bytes()
+
+    # Fake docker binary that signals upgrade.sh with SIGHUP during `docker compose up`
+    # (after backup succeeded and git + .env have already been mutated to target-release).
+    fake_bin = tmp_path / "sighup-docker-bin"
+    fake_bin.mkdir()
+    marker = tmp_path / "up-invoked"
+    pid_file = tmp_path / "upgrade.pid"
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        f"""#!/usr/bin/env bash
+if [[ "$*" == *"compose up"* ]]; then
+  touch "{marker}"
+  if [[ -f "{pid_file}" ]]; then
+    kill -HUP "$(cat "{pid_file}")"
+    sleep 5
+  fi
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+
+    # Launch upgrade.sh via bash wrapper that records its own PID before exec'ing upgrade.sh
+    proc = subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            f'echo $$ > "{pid_file}"; exec bash "{bootstrap_dir / "upgrade.sh"}" '
+            f'--repo-dir "{repo_dir}" --target target-release --skip-fetch --no-pull',
+        ],
+        env={
+            **os.environ,
+            "HOMELAB_BACKUP_DIR": str(backup_parent),
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    _stdout, stderr = proc.communicate(timeout=30)
+    assert marker.exists()
+    assert proc.returncode != 0
+    assert "Initiating automatic rollback" in stderr
+    assert "Automatic rollback succeeded" in stderr
+    assert _run(["git", "-C", str(repo_dir), "rev-parse", "HEAD"]).stdout.strip() == LEGACY_COMMIT
+    assert (repo_dir / ".env").read_bytes() == pre_env
+    assert (repo_dir / "apps" / "plex" / "config" / "Preferences.xml").read_bytes() == pre_prefs
+    assert (storage_dir / "maintainerr" / "data" / "maintainerr.sqlite").read_bytes() == pre_maint
+    assert signal.SIGHUP.value == 1
+
+    # Verify a second SIGTERM arriving while rollback.sh is already running does NOT abort rollback.
+    marker2 = tmp_path / "up-invoked-2"
+    pid_file2 = tmp_path / "upgrade2.pid"
+    rb_started = tmp_path / "rb-started"
+    fake_docker.write_text(
+        f"""#!/usr/bin/env bash
+if [[ "$*" == *"compose up"* ]]; then
+  touch "{marker2}"
+  if [[ -f "{pid_file2}" ]]; then
+    kill -TERM "$(cat "{pid_file2}")"
+    sleep 5
+  fi
+elif [[ "$*" == *"compose --profile * down --remove-orphans"* ]]; then
+  if [[ -f "{pid_file2}" && ! -f "{rb_started}" ]]; then
+    touch "{rb_started}"
+    kill -TERM "$(cat "{pid_file2}")"
+    sleep 0.2
+  fi
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    proc2 = subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            f'echo $$ > "{pid_file2}"; exec bash "{bootstrap_dir / "upgrade.sh"}" '
+            f'--repo-dir "{repo_dir}" --target target-release --skip-fetch --no-pull',
+        ],
+        env={
+            **os.environ,
+            "HOMELAB_BACKUP_DIR": str(backup_parent),
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    _stdout2, stderr2 = proc2.communicate(timeout=30)
+    assert marker2.exists()
+    assert rb_started.exists()
+    assert proc2.returncode != 0
+    assert "Automatic rollback succeeded" in stderr2
+    assert _run(["git", "-C", str(repo_dir), "rev-parse", "HEAD"]).stdout.strip() == LEGACY_COMMIT
+    assert (repo_dir / ".env").read_bytes() == pre_env
+    assert (repo_dir / "apps" / "plex" / "config" / "Preferences.xml").read_bytes() == pre_prefs
+    assert (storage_dir / "maintainerr" / "data" / "maintainerr.sqlite").read_bytes() == pre_maint
+    assert time.monotonic() > 0
