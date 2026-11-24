@@ -550,7 +550,7 @@ This project is provided as-is for personal use. Please ensure you comply with a
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the branching model, Conventional Commits guidelines, environment/documentation sync rules, and how to run local quality checks (`make check`) as well as the full-stack end-to-end verification (`make system-test`, which runs automatically in the CI `System Test (make up)` stage).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the branching model, Conventional Commits guidelines, environment/documentation sync rules, and how to run local quality checks (`make check`) as well as the full-stack end-to-end verification (`make system-test`, which runs automatically in the CI `System Test (make up)` stage). See [docs/BACKLOG.md](docs/BACKLOG.md) for planned features and roadmap items.
 
 ## Contributing
 

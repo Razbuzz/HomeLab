@@ -30,6 +30,9 @@ Key components:
 ├── .github/workflows/                # CI quality gate (ci.yml) & release automation (release.yml)
 ├── apps/
 │   └── home-server-dashboard/        # Nginx dashboard Dockerfile and html/index.html
+├── docs/
+│   ├── BACKLOG.md                    # Planned roadmap items & architecture specs
+│   └── hermes-agent.md               # Hermes Agent (beta) setup & hardening guide
 ├── scripts/                          # Host setup & systemd unit scripts
 ├── tests/                            # Pytest validation suite
 ├── .env                              # Environment defaults and secret placeholders
