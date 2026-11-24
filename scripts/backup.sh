@@ -218,12 +218,40 @@ if is_same_or_subpath "${BACKUP_DIR}" "${REPO_DIR}"; then
   echo "Error: backup directory (${BACKUP_DIR}) must NOT be inside repository (${REPO_DIR})" >&2
   exit 1
 fi
+if is_same_or_subpath "${REPO_DIR}" "${BACKUP_DIR}"; then
+  echo "Error: backup directory (${BACKUP_DIR}) must NOT be an ancestor of repository (${REPO_DIR})" >&2
+  exit 1
+fi
 if is_same_or_subpath "${BACKUP_DIR}" "${APPS_MOUNT}"; then
   echo "Error: backup directory (${BACKUP_DIR}) must NOT be inside APPS_MOUNT (${APPS_MOUNT})" >&2
   exit 1
 fi
+if is_same_or_subpath "${APPS_MOUNT}" "${BACKUP_DIR}"; then
+  echo "Error: backup directory (${BACKUP_DIR}) must NOT be an ancestor of APPS_MOUNT (${APPS_MOUNT})" >&2
+  exit 1
+fi
 if [[ -n "${MAINTAINERR_DATA_DIR}" ]] && is_same_or_subpath "${BACKUP_DIR}" "${MAINTAINERR_DATA_DIR}"; then
   echo "Error: backup directory (${BACKUP_DIR}) must NOT be inside Maintainerr data dir (${MAINTAINERR_DATA_DIR})" >&2
+  exit 1
+fi
+if [[ -n "${MAINTAINERR_DATA_DIR}" ]] && is_same_or_subpath "${MAINTAINERR_DATA_DIR}" "${BACKUP_DIR}"; then
+  echo "Error: backup directory (${BACKUP_DIR}) must NOT be an ancestor of Maintainerr data dir (${MAINTAINERR_DATA_DIR})" >&2
+  exit 1
+fi
+
+if [[ -e "${BACKUP_DIR}" ]]; then
+  if [[ ! -d "${BACKUP_DIR}" ]]; then
+    echo "Error: backup path exists and is not a directory: ${BACKUP_DIR}" >&2
+    exit 1
+  fi
+  if [[ -n "$(ls -A "${BACKUP_DIR}" 2>/dev/null || true)" ]]; then
+    echo "Error: backup directory already exists and is not empty: ${BACKUP_DIR}" >&2
+    exit 1
+  fi
+fi
+
+if [[ ! -d "${APPS_MOUNT}" ]]; then
+  echo "Error: APPS_MOUNT directory not found: ${APPS_MOUNT}" >&2
   exit 1
 fi
 
@@ -233,7 +261,7 @@ run_as_root() {
   else
     if ! command -v sudo >/dev/null 2>&1; then
       echo "Error: root privileges or 'sudo' are required to run: $*" >&2
-      exit 1
+      return 1
     fi
     sudo "$@"
   fi
@@ -252,10 +280,8 @@ dir_size_kb() {
 
 # Check available disk space before touching Docker or creating files.
 ESTIMATED_KB=1024
-if [[ -d "${APPS_MOUNT}" ]]; then
-  apps_kb="$(dir_size_kb "${APPS_MOUNT}")"
-  ESTIMATED_KB=$((ESTIMATED_KB + apps_kb))
-fi
+apps_kb="$(dir_size_kb "${APPS_MOUNT}")"
+ESTIMATED_KB=$((ESTIMATED_KB + apps_kb))
 if [[ -n "${MAINTAINERR_DATA_DIR}" && -d "${MAINTAINERR_DATA_DIR}" ]]; then
   maint_kb="$(dir_size_kb "${MAINTAINERR_DATA_DIR}")"
   ESTIMATED_KB=$((ESTIMATED_KB + maint_kb))
@@ -298,8 +324,6 @@ fi
 
 HAD_BETA_RUNNING=false
 STACK_WAS_STOPPED=false
-RESTART_NEEDED=false
-
 BACKUP_CREATED_BY_US=false
 BACKUP_COMPLETED=false
 
@@ -324,32 +348,34 @@ detect_beta_running() {
   HAD_BETA_RUNNING=false
 }
 
-restart_stack_if_needed() {
-  if [[ "${STACK_WAS_STOPPED}" != true || "${NO_RESTART}" == true || "${SKIP_DOCKER}" == true ]]; then
-    return 0
-  fi
-  echo "==> Restarting HomeLab stack after backup..."
+restart_stack() {
+  echo "==> Restarting HomeLab stack..."
   if [[ "${HAD_BETA_RUNNING}" == true ]]; then
     compose_cmd --profile beta up -d --remove-orphans
   else
     compose_cmd up -d --remove-orphans
   fi
-  RESTART_NEEDED=false
+  STACK_WAS_STOPPED=false
 }
 
 cleanup() {
   local rc=$?
-  trap - EXIT INT TERM
+  trap - EXIT
+  trap '' INT TERM HUP
   set +e
   if [[ "${BACKUP_COMPLETED}" != true && "${BACKUP_CREATED_BY_US}" == true && -d "${BACKUP_DIR}" ]]; then
     rm -rf "${BACKUP_DIR}" 2>/dev/null || true
   fi
-  if [[ "${RESTART_NEEDED}" == true ]]; then
-    restart_stack_if_needed || echo "Warning: failed to restart Docker stack during cleanup" >&2
+  if [[ "${SKIP_DOCKER}" != true && "${STACK_WAS_STOPPED}" == true ]] && [[ "${BACKUP_COMPLETED}" != true || "${NO_RESTART}" != true ]]; then
+    restart_stack || echo "Warning: failed to restart Docker stack during cleanup" >&2
+  fi
+  if [[ "${BACKUP_COMPLETED}" != true && "${rc}" -eq 0 ]]; then
+    rc=1
   fi
   exit "${rc}"
 }
 trap cleanup EXIT
+trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -361,11 +387,8 @@ if [[ "${SKIP_DOCKER}" != true ]]; then
   detect_beta_running
   if [[ "${ONLINE}" != true ]]; then
     echo "==> Stopping HomeLab stack for crash-consistent backup..."
-    compose_cmd --profile '*' down
     STACK_WAS_STOPPED=true
-    if [[ "${NO_RESTART}" != true ]]; then
-      RESTART_NEEDED=true
-    fi
+    compose_cmd --profile '*' down
   fi
 fi
 
@@ -385,22 +408,16 @@ if [[ "${SRC_ENV_SHA}" != "${DST_ENV_SHA}" ]]; then
   exit 1
 fi
 
-APPS_ARCHIVE=""
-if [[ -d "${APPS_MOUNT}" ]]; then
-  echo "==> Archiving ${APPS_MOUNT} (excluding home-server-dashboard)..."
-  APPS_ARCHIVE="apps.tar.gz"
-  apps_archive_path="${BACKUP_DIR}/${APPS_ARCHIVE}"
-  if ! tar --numeric-owner --anchored --exclude='./home-server-dashboard' -C "${APPS_MOUNT}" -czpf "${apps_archive_path}" . 2>/dev/null; then
-    echo "    Retrying archive with root privileges for root-owned/mode-restricted files..."
-    run_as_root tar --numeric-owner --anchored --exclude='./home-server-dashboard' -C "${APPS_MOUNT}" -czpf "${apps_archive_path}" .
-    run_as_root chown "$(id -u):$(id -g)" "${apps_archive_path}"
-  fi
-  chmod 600 "${apps_archive_path}"
-  tar -tzf "${apps_archive_path}" >/dev/null
-else
-  echo "Error: APPS_MOUNT directory not found: ${APPS_MOUNT}" >&2
-  exit 1
+APPS_ARCHIVE="apps.tar.gz"
+echo "==> Archiving ${APPS_MOUNT} (excluding home-server-dashboard)..."
+apps_archive_path="${BACKUP_DIR}/${APPS_ARCHIVE}"
+if ! tar --numeric-owner --anchored --exclude='./home-server-dashboard' -C "${APPS_MOUNT}" -czpf "${apps_archive_path}" . 2>/dev/null; then
+  echo "    Retrying archive with root privileges for root-owned/mode-restricted files..."
+  run_as_root tar --numeric-owner --anchored --exclude='./home-server-dashboard' -C "${APPS_MOUNT}" -czpf "${apps_archive_path}" .
+  run_as_root chown "$(id -u):$(id -g)" "${apps_archive_path}"
 fi
+chmod 600 "${apps_archive_path}"
+tar -tzf "${apps_archive_path}" >/dev/null
 
 MAINTAINERR_ARCHIVE=""
 if [[ -n "${MAINTAINERR_DATA_DIR}" && -d "${MAINTAINERR_DATA_DIR}" ]]; then
@@ -445,10 +462,12 @@ fi
 )
 
 BACKUP_COMPLETED=true
-ln -sfn "${BACKUP_DIR}" "${BACKUP_PARENT}/latest"
+if [[ -z "${CUSTOM_BACKUP_DIR}" ]]; then
+  ln -sfn "${BACKUP_DIR}" "${BACKUP_PARENT}/latest"
+fi
 
-if [[ "${RESTART_NEEDED}" == true ]]; then
-  restart_stack_if_needed
+if [[ "${SKIP_DOCKER}" != true && "${STACK_WAS_STOPPED}" == true && "${NO_RESTART}" != true ]]; then
+  restart_stack
 fi
 
 echo "==> Backup verified successfully."

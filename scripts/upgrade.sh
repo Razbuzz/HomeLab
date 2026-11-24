@@ -210,6 +210,18 @@ TARGET_REF="$(resolve_target_ref)"
 resolve_target_commit() {
   local ref="$1"
   local resolved=""
+  if git -C "${REPO_DIR}" show-ref --verify --quiet "refs/tags/${ref}"; then
+    if resolved="$(git -C "${REPO_DIR}" rev-parse --verify --quiet "refs/tags/${ref}^{commit}" 2>/dev/null)"; then
+      printf '%s\n' "${resolved}"
+      return 0
+    fi
+  fi
+  if [[ "${SKIP_FETCH}" != true ]] && git -C "${REPO_DIR}" show-ref --verify --quiet "refs/remotes/origin/${ref}"; then
+    if resolved="$(git -C "${REPO_DIR}" rev-parse --verify --quiet "refs/remotes/origin/${ref}^{commit}" 2>/dev/null)"; then
+      printf '%s\n' "${resolved}"
+      return 0
+    fi
+  fi
   if resolved="$(git -C "${REPO_DIR}" rev-parse --verify --quiet "${ref}^{commit}" 2>/dev/null)"; then
     printf '%s\n' "${resolved}"
     return 0
@@ -267,32 +279,10 @@ if [[ "${DRY_RUN}" == true ]]; then
   exit 0
 fi
 
-echo "==> Creating pre-upgrade backup..."
-backup_args=(--repo-dir "${REPO_DIR}" --no-restart)
-if [[ -n "${CUSTOM_BACKUP_DIR}" ]]; then
-  backup_args+=(--backup-dir "${CUSTOM_BACKUP_DIR}")
-fi
-if [[ "${SKIP_DOCKER}" == true ]]; then
-  backup_args+=(--skip-docker)
-fi
-
-BACKUP_OUTPUT_FILE="$(mktemp /tmp/homelab-backup-out.XXXXXX)"
-if ! bash "${SCRIPT_DIR}/backup.sh" "${backup_args[@]}" | tee "${BACKUP_OUTPUT_FILE}"; then
-  rm -f "${BACKUP_OUTPUT_FILE}"
-  echo "Error: backup failed; aborting upgrade without modifying repository or data." >&2
-  exit 1
-fi
-BACKUP_PATH="$(grep -E '^BACKUP_PATH=' "${BACKUP_OUTPUT_FILE}" | tail -n 1 | cut -d= -f2-)"
-rm -f "${BACKUP_OUTPUT_FILE}"
-
-if [[ -z "${BACKUP_PATH}" || ! -d "${BACKUP_PATH}" ]]; then
-  echo "Error: backup succeeded but failed to determine BACKUP_PATH" >&2
-  exit 1
-fi
-echo "==> Verified backup stored at: ${BACKUP_PATH}"
-
-UPGRADE_IN_PROGRESS=true
+UPGRADE_IN_PROGRESS=false
 ROLLBACK_DONE=false
+BACKUP_PATH=""
+BACKUP_OUTPUT_FILE=""
 
 run_auto_rollback() {
   local reason="$1"
@@ -321,16 +311,52 @@ run_auto_rollback() {
 
 on_exit() {
   local rc=$?
-  trap - EXIT INT TERM
-  if [[ "${UPGRADE_IN_PROGRESS}" == true && "${rc}" -ne 0 ]]; then
+  trap - EXIT
+  trap '' INT TERM HUP
+  if [[ -n "${BACKUP_OUTPUT_FILE}" ]]; then
+    rm -f "${BACKUP_OUTPUT_FILE}" 2>/dev/null || true
+  fi
+  if [[ "${UPGRADE_IN_PROGRESS}" == true ]]; then
     set +e
-    run_auto_rollback "Upgrade aborted with exit code ${rc}"
+    run_auto_rollback "Upgrade aborted (exit code ${rc})"
+    if [[ "${rc}" -eq 0 ]]; then
+      rc=1
+    fi
   fi
   exit "${rc}"
 }
 trap on_exit EXIT
+trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+echo "==> Creating pre-upgrade backup..."
+backup_args=(--repo-dir "${REPO_DIR}" --no-restart)
+if [[ -n "${CUSTOM_BACKUP_DIR}" ]]; then
+  backup_args+=(--backup-dir "${CUSTOM_BACKUP_DIR}")
+fi
+if [[ "${SKIP_DOCKER}" == true ]]; then
+  backup_args+=(--skip-docker)
+fi
+
+BACKUP_OUTPUT_FILE="$(mktemp /tmp/homelab-backup-out.XXXXXX)"
+if ! bash "${SCRIPT_DIR}/backup.sh" "${backup_args[@]}" | tee "${BACKUP_OUTPUT_FILE}"; then
+  rm -f "${BACKUP_OUTPUT_FILE}"
+  BACKUP_OUTPUT_FILE=""
+  echo "Error: backup failed; aborting upgrade without modifying repository or data." >&2
+  exit 1
+fi
+BACKUP_PATH="$(grep -E '^BACKUP_PATH=' "${BACKUP_OUTPUT_FILE}" | tail -n 1 | cut -d= -f2- || true)"
+rm -f "${BACKUP_OUTPUT_FILE}"
+BACKUP_OUTPUT_FILE=""
+
+if [[ -z "${BACKUP_PATH}" || ! -d "${BACKUP_PATH}" ]]; then
+  echo "Error: backup succeeded but failed to determine BACKUP_PATH" >&2
+  exit 1
+fi
+echo "==> Verified backup stored at: ${BACKUP_PATH}"
+
+UPGRADE_IN_PROGRESS=true
 
 compose_cmd() {
   (
@@ -339,10 +365,15 @@ compose_cmd() {
   )
 }
 
+compose_profile_args=()
+if [[ "${BETA}" == true ]]; then
+  compose_profile_args=(--profile beta)
+fi
+
 get_service_state() {
   local service="$1"
   local cid status health
-  cid="$(compose_cmd ps -a -q "${service}" 2>/dev/null | head -n 1 || true)"
+  cid="$(compose_cmd "${compose_profile_args[@]}" ps -a -q "${service}" 2>/dev/null | head -n 1 || true)"
   if [[ -z "${cid}" ]]; then
     printf 'missing|none|\n'
     return 0
@@ -415,10 +446,19 @@ wait_for_services_healthy() {
 
 # Step 1: Discard local .env edits now that verified backup exists
 echo "==> Checking out target ref ${TARGET_REF} (${TARGET_COMMIT:0:8})..."
-git -C "${REPO_DIR}" checkout -- .env
+git -C "${REPO_DIR}" checkout HEAD -- .env
 
 # Step 2: Check out target ref cleanly (branch tracking or detached tag/commit)
-if git -C "${REPO_DIR}" show-ref --verify --quiet "refs/heads/${TARGET_REF}"; then
+if git -C "${REPO_DIR}" show-ref --verify --quiet "refs/tags/${TARGET_REF}"; then
+  git -C "${REPO_DIR}" checkout "${TARGET_COMMIT}"
+elif [[ "${SKIP_FETCH}" != true ]] && git -C "${REPO_DIR}" show-ref --verify --quiet "refs/remotes/origin/${TARGET_REF}"; then
+  if git -C "${REPO_DIR}" show-ref --verify --quiet "refs/heads/${TARGET_REF}"; then
+    git -C "${REPO_DIR}" checkout "${TARGET_REF}"
+    git -C "${REPO_DIR}" merge --ff-only "origin/${TARGET_REF}"
+  else
+    git -C "${REPO_DIR}" checkout -B "${TARGET_REF}" "origin/${TARGET_REF}"
+  fi
+elif git -C "${REPO_DIR}" show-ref --verify --quiet "refs/heads/${TARGET_REF}"; then
   git -C "${REPO_DIR}" checkout "${TARGET_REF}"
   if git -C "${REPO_DIR}" show-ref --verify --quiet "refs/remotes/origin/${TARGET_REF}"; then
     git -C "${REPO_DIR}" merge --ff-only "origin/${TARGET_REF}"
@@ -443,11 +483,6 @@ fi
 python3 "${SCRIPT_DIR}/merge-env.py" "${merge_args[@]}"
 
 if [[ "${SKIP_DOCKER}" != true ]]; then
-  compose_profile_args=()
-  if [[ "${BETA}" == true ]]; then
-    compose_profile_args=(--profile beta)
-  fi
-
   # Step 4: Validate Compose config
   echo "==> Validating Docker Compose configuration..."
   compose_cmd "${compose_profile_args[@]}" config --quiet

@@ -274,7 +274,7 @@ run_as_root() {
   else
     if ! command -v sudo >/dev/null 2>&1; then
       echo "Error: root privileges or 'sudo' are required to run: $*" >&2
-      exit 1
+      return 1
     fi
     sudo "$@"
   fi
@@ -296,11 +296,34 @@ rm_rf_with_privs() {
   rm -rf "${target}" 2>/dev/null || run_as_root rm -rf "${target}"
 }
 
+archive_has_foreign_owners() {
+  local archive="$1"
+  local cur_uid cur_gid
+  cur_uid="$(id -u)"
+  cur_gid="$(id -g)"
+  local owners
+  if ! owners="$(tar --numeric-owner -tvzf "${archive}" | awk '{print $2}')"; then
+    return 0
+  fi
+  local pair
+  while IFS= read -r pair; do
+    [[ -z "${pair}" ]] && continue
+    if [[ "${pair}" != "${cur_uid}/${cur_gid}" ]]; then
+      return 0
+    fi
+  done <<< "${owners}"
+  return 1
+}
+
 tar_extract() {
   local archive="$1"
   local target_dir="$2"
-  if ! tar --numeric-owner -xzpf "${archive}" -C "${target_dir}" 2>/dev/null; then
-    run_as_root tar --numeric-owner -xzpf "${archive}" -C "${target_dir}"
+  if [[ "$(id -u)" -ne 0 ]] && archive_has_foreign_owners "${archive}"; then
+    run_as_root tar --same-owner --numeric-owner -xzpf "${archive}" -C "${target_dir}"
+    return $?
+  fi
+  if ! tar --same-owner --numeric-owner -xzpf "${archive}" -C "${target_dir}" 2>/dev/null; then
+    run_as_root tar --same-owner --numeric-owner -xzpf "${archive}" -C "${target_dir}"
   fi
 }
 
@@ -314,7 +337,23 @@ safe_restore_dir() {
   local parent_dir stage_dir
   parent_dir="$(dirname "${target_dir}")"
   mkdir_with_privs "${parent_dir}"
-  stage_dir="$(mktemp -d "${parent_dir}/.homelab-restore-stage.XXXXXX" 2>/dev/null || run_as_root mktemp -d "${parent_dir}/.homelab-restore-stage.XXXXXX")"
+
+  local prev_int_trap prev_term_trap prev_hup_trap
+  prev_int_trap="$(trap -p INT || true)"
+  prev_term_trap="$(trap -p TERM || true)"
+  prev_hup_trap="$(trap -p HUP || true)"
+  trap '' INT TERM HUP
+
+  restore_signal_traps() {
+    if [[ -n "${prev_int_trap}" ]]; then eval "${prev_int_trap}"; else trap - INT; fi
+    if [[ -n "${prev_term_trap}" ]]; then eval "${prev_term_trap}"; else trap - TERM; fi
+    if [[ -n "${prev_hup_trap}" ]]; then eval "${prev_hup_trap}"; else trap - HUP; fi
+  }
+
+  stage_dir="$(mktemp -d "${parent_dir}/.homelab-restore-stage.XXXXXX" 2>/dev/null || run_as_root mktemp -d "${parent_dir}/.homelab-restore-stage.XXXXXX")" || {
+    restore_signal_traps
+    return 1
+  }
 
   local moved_items=()
   local entry base
@@ -324,7 +363,18 @@ safe_restore_dir() {
     if [[ "${preserve_dashboard}" == "true" && "${base}" == "home-server-dashboard" ]]; then
       continue
     fi
-    mv_with_privs "${entry}" "${stage_dir}/${base}"
+    if ! mv_with_privs "${entry}" "${stage_dir}/${base}"; then
+      shopt -u dotglob nullglob
+      local item
+      for item in "${moved_items[@]}"; do
+        if [[ -e "${stage_dir}/${item}" || -L "${stage_dir}/${item}" ]]; then
+          mv_with_privs "${stage_dir}/${item}" "${target_dir}/${item}" || true
+        fi
+      done
+      rm_rf_with_privs "${stage_dir}" || true
+      restore_signal_traps
+      return 1
+    fi
     moved_items+=("${base}")
   done
   shopt -u dotglob nullglob
@@ -347,10 +397,12 @@ safe_restore_dir() {
       fi
     done
     rm_rf_with_privs "${stage_dir}"
+    restore_signal_traps
     return 1
   fi
 
   rm_rf_with_privs "${stage_dir}"
+  restore_signal_traps
 }
 
 compose_cmd() {
@@ -370,7 +422,7 @@ if [[ "${SKIP_DOCKER}" != true ]]; then
 fi
 
 echo "==> Checking out git commit ${GIT_COMMIT}..."
-git -C "${REPO_DIR}" checkout -- .env 2>/dev/null || true
+git -C "${REPO_DIR}" checkout HEAD -- .env 2>/dev/null || true
 if [[ -n "${GIT_BRANCH}" ]]; then
   git -C "${REPO_DIR}" checkout -B "${GIT_BRANCH}" "${GIT_COMMIT}"
 else

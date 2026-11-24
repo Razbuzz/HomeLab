@@ -57,7 +57,7 @@ Older commits such as `ec3a6250bfa6d6d1391e1a14100b3342ecef2cc5` do not yet incl
    git fetch origin --tags --prune
    ```
 
-2. **Extract the upgrade scripts from the target release tag into `/tmp/hl-up`** (replace `v1.5.0` with your target tag or `origin/main`):
+2. **Extract the upgrade scripts from the target release tag into `/tmp/hl-up`** (or set `TARGET_REF=v1.5.0` or `TARGET_REF=origin/main` explicitly):
 
    ```bash
    TARGET_REF="$(git tag --list 'v*.*.*' --sort=-v:refname | head -n 1)"
@@ -93,7 +93,7 @@ Older commits such as `ec3a6250bfa6d6d1391e1a14100b3342ecef2cc5` do not yet incl
 
 ## What Gets Backed Up vs. Excluded
 
-Backups are stored by default outside the repository at `${HOMELAB_BACKUP_DIR:-$(dirname "$REPO_DIR")/homelab-backups}/<UTC_TIMESTAMP>-<SHORT_SHA>` with a `latest` symlink pointing to the newest snapshot.
+Backups are stored by default outside the repository at `${HOMELAB_BACKUP_DIR:-$(dirname "$REPO_DIR")/homelab-backups}/<UTC_TIMESTAMP>-<SHORT_SHA>` with a `latest` symlink pointing to the newest snapshot (when using `--backup-dir`, `latest` is not modified outside the default backup root).
 
 | Item | Included | Notes |
 | :--- | :--- | :--- |
@@ -106,9 +106,9 @@ Backups are stored by default outside the repository at `${HOMELAB_BACKUP_DIR:-$
 | `SHA256SUMS` | Yes (`0600`) | Verified via `sha256sum -c SHA256SUMS` at backup completion and before every rollback. |
 
 Before stopping containers or writing files, `backup.sh` also verifies:
-- The backup directory is **not** inside `REPO_DIR`, `APPS_MOUNT`, or `MAINTAINERR_DATA_DIR`.
+- `APPS_MOUNT` exists, and the backup directory is neither inside nor an ancestor of `REPO_DIR`, `APPS_MOUNT`, or `MAINTAINERR_DATA_DIR` (and any existing custom `--backup-dir` is empty).
 - The destination filesystem has enough free space (`du -sk` of sources + **20% headroom**).
-- Unless `--online` or `--skip-docker` is passed, containers are stopped gracefully (`docker compose --profile '*' down`) for crash-consistent SQLite/CouchDB backups and restarted afterwards (unless `--no-restart`).
+- Unless `--online` or `--skip-docker` is passed, containers are stopped gracefully (`docker compose --profile '*' down`) for crash-consistent SQLite/CouchDB backups and restarted afterwards (unless `--no-restart` on a successful backup; mid-backup failures always restart stopped containers).
 
 ---
 
