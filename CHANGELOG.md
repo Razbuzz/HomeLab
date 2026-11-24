@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-11-24
+
+### Features
+
+- **ops:** Add safe backup, merge-env, rollback, and upgrade scripts ([7cfd1e2](https://github.com/Razbuzz/HomeLab/commit/7cfd1e20d2cfdbcc473db25ba94211f1f096c055))
+- **compose:** Add healthchecks to all services ([284005f](https://github.com/Razbuzz/HomeLab/commit/284005f00416c922b230cf628849ba78bc73ddb7))
+
+### Bug Fixes
+
+- **ops:** Harden rollback uid, target ref, and signal safety ([2721606](https://github.com/Razbuzz/HomeLab/commit/2721606497a4d51cb68f0649455937af12354e9e))
+- **ci:** Harden system-test cleanup, signal handling, and assertions ([bce7b27](https://github.com/Razbuzz/HomeLab/commit/bce7b2732e6026be3d44f0fb88d33b07c6fe2701))
+
+### Documentation
+
+- **ops:** Add Makefile ops targets and safe upgrade guide ([44c27d7](https://github.com/Razbuzz/HomeLab/commit/44c27d71bda717161e19094ed003e997a641ae7c))
+- **backlog:** Add roadmap tasks for auto-update and config migration ([1f504a3](https://github.com/Razbuzz/HomeLab/commit/1f504a30d025038ef7e2f0195cc8471e923b9711))
+- Document service healthcheck convention ([2d2d460](https://github.com/Razbuzz/HomeLab/commit/2d2d46002c7233f94c73c66d8ff592c1db5e6dca))
+
+### CI/CD
+
+- Add full-stack make up system test stage ([a5c27ec](https://github.com/Razbuzz/HomeLab/commit/a5c27ec83f7c8d8283ef0e06008e3ed434a338e3))
+
+### Testing
+
+- **ops:** Add regression tests for review edge cases ([b71b117](https://github.com/Razbuzz/HomeLab/commit/b71b1170d89ae1cf8e090e3cb361777126da36dd))
+- **ops:** Add upgrade, rollback, and merge-env test suite ([2097cef](https://github.com/Razbuzz/HomeLab/commit/2097cef884afc50b2e223bbf5ae7b858a75cde95))
+- **compose:** Harden healthcheck validation and add unit tests ([7b0a7ee](https://github.com/Razbuzz/HomeLab/commit/7b0a7ee69674316d71123d3e9501119bf65d2978))
+- **compose:** Require healthcheck definitions for all services ([2406282](https://github.com/Razbuzz/HomeLab/commit/2406282fd15a0407876d45245f0b4a4e482590d6))
+
+### Miscellaneous
+
+- **mattermost:** Remove mattermost and mattermost-db services ([53e787e](https://github.com/Razbuzz/HomeLab/commit/53e787e8a2a559a1c7d40b6d250a2bb123a5bfb5))
+- **threadfin:** Remove threadfin iptv proxy service ([5854741](https://github.com/Razbuzz/HomeLab/commit/58547416fe002a7cfbb15c1edba5456aed632486))
+
 ## [1.4.0] - 2026-11-23
 
 ### Features

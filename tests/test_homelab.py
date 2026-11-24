@@ -12,6 +12,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
+CI_COMPOSE_FILE = REPO_ROOT / "tests" / "docker-compose.ci.yml"
 ENV_FILE = REPO_ROOT / ".env"
 README_FILE = REPO_ROOT / "README.md"
 DASHBOARD_HTML = REPO_ROOT / "apps" / "home-server-dashboard" / "html" / "index.html"
@@ -30,6 +31,24 @@ DASHBOARD_HOST_PORT_ALLOWLIST = {
     "Cockpit": 9090,
     "Plex": 32400,
 }
+
+
+class _ComposeOverrideSafeLoader(yaml.SafeLoader):
+    """YAML SafeLoader supporting Docker Compose `!reset` and `!override` tags."""
+
+
+def _compose_tag_constructor(loader: yaml.Loader, tag_suffix: str, node: yaml.Node) -> object:
+    del tag_suffix
+    if isinstance(node, yaml.ScalarNode):
+        return loader.construct_scalar(node)
+    if isinstance(node, yaml.SequenceNode):
+        return loader.construct_sequence(node)
+    if isinstance(node, yaml.MappingNode):
+        return loader.construct_mapping(node)
+    return None
+
+
+_ComposeOverrideSafeLoader.add_multi_constructor("!", _compose_tag_constructor)
 
 
 def parse_env_entries(env_text: str) -> list[tuple[str, str]]:
@@ -256,6 +275,86 @@ def test_compose_validates_with_docker_compose() -> None:
     assert "services" in parsed and parsed["services"], "Rendered compose config must contain services"
 
 
+def test_ci_compose_override_is_valid_and_scoped() -> None:
+    base_compose = parse_compose_yaml()
+    assert CI_COMPOSE_FILE.is_file(), "tests/docker-compose.ci.yml must exist"
+
+    override_data = yaml.load(
+        CI_COMPOSE_FILE.read_text(encoding="utf-8"),
+        Loader=_ComposeOverrideSafeLoader,
+    )
+    assert isinstance(override_data, dict) and isinstance(override_data.get("services"), dict), (
+        "tests/docker-compose.ci.yml must define a top-level 'services' mapping"
+    )
+
+    unknown_services = sorted(set(override_data["services"]) - set(base_compose["services"]))
+    assert not unknown_services, (
+        "tests/docker-compose.ci.yml defines unknown services not in docker-compose.yml: "
+        + ", ".join(unknown_services)
+    )
+
+    if shutil.which("docker") is None:
+        pytest.skip("docker binary not available in PATH")
+
+    check = subprocess.run(
+        ["docker", "compose", "version"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if check.returncode != 0:
+        pytest.skip(f"docker compose plugin not available: {check.stderr.strip()}")
+
+    env = os.environ.copy()
+    env["DEFAULT_STORAGE_MOUNT"] = "/tmp/homelab-storage"
+    env["DEFAULT_LAN_IP"] = "127.0.0.1"
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(COMPOSE_FILE),
+            "-f",
+            str(CI_COMPOSE_FILE),
+            "config",
+            "--format",
+            "json",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"docker compose -f docker-compose.yml -f tests/docker-compose.ci.yml config --format json failed "
+        f"(exit {result.returncode}):\n{result.stderr.strip()}"
+    )
+    parsed = json.loads(result.stdout)
+    services = parsed["services"]
+
+    for gpu_service in ("plex", "ollama"):
+        svc_cfg = services[gpu_service]
+        assert svc_cfg.get("runtime") is None, f"{gpu_service} CI override must strip runtime"
+        assert svc_cfg.get("deploy") is None, f"{gpu_service} CI override must strip deploy GPU reservation"
+
+    plex_sources = [vol.get("source") for vol in services["plex"].get("volumes") or []]
+    assert "/dev/dri" not in plex_sources, "plex CI override must strip /dev/dri device mount"
+
+    pihole_ports = services["pihole"].get("ports") or []
+    assert all(str(p.get("published")) != "53" for p in pihole_ports), (
+        "pihole CI override must replace (not merge) privileged host port 53"
+    )
+    for proto in ("tcp", "udp"):
+        assert any(
+            str(p.get("published")) == "15353"
+            and p.get("target") == 53
+            and str(p.get("protocol", "")).lower() == proto
+            for p in pihole_ports
+        ), f"pihole CI override must remap host port 53/{proto} to 15353/{proto}"
+
+
 def test_compose_vars_without_default_are_defined_in_env() -> None:
     env_keys = {k for k, _ in parse_env_entries(ENV_FILE.read_text(encoding="utf-8"))}
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
@@ -350,6 +449,78 @@ def test_services_have_required_fields_and_unique_container_names() -> None:
         container_names[cname] = service_name
 
 
+def _validate_service_healthcheck(service_name: str, service_cfg: dict) -> list[str]:
+    if not isinstance(service_cfg, dict):
+        return [f"{service_name}: service definition must be a mapping"]
+
+    healthcheck = service_cfg.get("healthcheck")
+    if not isinstance(healthcheck, dict):
+        return [f"{service_name}: missing 'healthcheck' mapping"]
+
+    issues: list[str] = []
+    if healthcheck.get("disable"):
+        issues.append(f"{service_name}: healthcheck must not be disabled")
+
+    test = healthcheck.get("test")
+    if isinstance(test, str):
+        stripped_test = test.strip()
+        if not stripped_test or stripped_test.upper() == "NONE":
+            issues.append(f"{service_name}: healthcheck.test must be a non-empty active command")
+    elif isinstance(test, list):
+        if not test or not all(isinstance(item, str) for item in test):
+            issues.append(f"{service_name}: healthcheck.test list must be a non-empty list of strings")
+        else:
+            kind = test[0].strip()
+            if kind.upper() == "NONE":
+                issues.append(f"{service_name}: healthcheck.test must not be 'NONE'")
+            elif kind == "CMD":
+                if len(test) < 2 or not test[1].strip():
+                    issues.append(
+                        f"{service_name}: healthcheck.test CMD form requires a non-empty command"
+                    )
+            elif kind == "CMD-SHELL":
+                if len(test) != 2 or not test[1].strip():
+                    issues.append(
+                        f"{service_name}: healthcheck.test CMD-SHELL form requires a single non-empty command string"
+                    )
+            else:
+                issues.append(
+                    f"{service_name}: healthcheck.test list must start with 'CMD' or 'CMD-SHELL' (got {test[0]!r})"
+                )
+    else:
+        issues.append(f"{service_name}: healthcheck.test must be a command string or list")
+
+    for duration_field in ("interval", "timeout"):
+        value = healthcheck.get(duration_field)
+        if isinstance(value, str):
+            if not value.strip():
+                issues.append(f"{service_name}: healthcheck.{duration_field} must not be blank")
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            if value <= 0:
+                issues.append(f"{service_name}: healthcheck.{duration_field} must be positive")
+        else:
+            issues.append(
+                f"{service_name}: healthcheck.{duration_field} must be a non-empty duration string or positive number"
+            )
+
+    retries = healthcheck.get("retries")
+    if not isinstance(retries, int) or isinstance(retries, bool) or retries <= 0:
+        issues.append(f"{service_name}: healthcheck.retries must be a positive integer")
+
+    return issues
+
+
+def test_all_services_define_healthcheck() -> None:
+    compose = parse_compose_yaml()
+    services = compose["services"]
+    issues: list[str] = []
+
+    for service_name, service_cfg in services.items():
+        issues.extend(_validate_service_healthcheck(service_name, service_cfg))
+
+    assert not issues, "Services missing valid healthcheck definitions:\n" + "\n".join(issues)
+
+
 def test_dashboard_services_match_published_or_allowlisted_ports() -> None:
     env_map = _build_ci_env_map()
     compose = parse_compose_yaml()
@@ -425,6 +596,74 @@ def test_compose_helpers_handle_escapes_defaults_and_port_variants() -> None:
     assert _host_bindings_conflict("", "127.0.0.1") is True
     assert _host_bindings_conflict("127.0.0.1", "127.0.0.1") is True
     assert _host_bindings_conflict("127.0.0.1", "192.168.1.50") is False
+
+
+def test_validate_service_healthcheck_rejects_disabled_and_malformed_configs() -> None:
+    valid_cmd = {
+        "healthcheck": {
+            "test": ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/"],
+            "interval": "30s",
+            "timeout": "5s",
+            "retries": 3,
+        }
+    }
+    valid_shell = {
+        "healthcheck": {
+            "test": ["CMD-SHELL", "curl -sf http://127.0.0.1:80/health || exit 1"],
+            "interval": "30s",
+            "timeout": "5s",
+            "retries": 3,
+        }
+    }
+    valid_str = {
+        "healthcheck": {
+            "test": "curl -sf http://127.0.0.1:80/health || exit 1",
+            "interval": "30s",
+            "timeout": "5s",
+            "retries": 3,
+        }
+    }
+    assert _validate_service_healthcheck("svc", valid_cmd) == []
+    assert _validate_service_healthcheck("svc", valid_shell) == []
+    assert _validate_service_healthcheck("svc", valid_str) == []
+
+    base_hc = {"test": ["CMD-SHELL", "true"], "interval": "30s", "timeout": "5s", "retries": 3}
+
+    invalid_cases: list[object] = [
+        "not-a-dict",
+        {},
+        {"healthcheck": None},
+        {"healthcheck": "disabled"},
+        {"healthcheck": {**base_hc, "disable": True}},
+        {"healthcheck": {**base_hc, "test": ["NONE"]}},
+        {"healthcheck": {**base_hc, "test": ["none"]}},
+        {"healthcheck": {**base_hc, "test": "NONE"}},
+        {"healthcheck": {**base_hc, "test": ""}},
+        {"healthcheck": {**base_hc, "test": "   "}},
+        {"healthcheck": {**base_hc, "test": []}},
+        {"healthcheck": {**base_hc, "test": [""]}},
+        {"healthcheck": {**base_hc, "test": ["CMD"]}},
+        {"healthcheck": {**base_hc, "test": ["CMD", "   "]}},
+        {"healthcheck": {**base_hc, "test": ["CMD-SHELL"]}},
+        {"healthcheck": {**base_hc, "test": ["CMD-SHELL", ""]}},
+        {"healthcheck": {**base_hc, "test": ["CMD-SHELL", "   "]}},
+        {"healthcheck": {**base_hc, "test": ["INVALID", "echo"]}},
+        {"healthcheck": {**base_hc, "test": None}},
+        {"healthcheck": {**base_hc, "test": 123}},
+        {"healthcheck": {**base_hc, "interval": ""}},
+        {"healthcheck": {**base_hc, "interval": "   "}},
+        {"healthcheck": {**base_hc, "timeout": ""}},
+        {"healthcheck": {**base_hc, "timeout": "   "}},
+        {"healthcheck": {**base_hc, "timeout": True}},
+        {"healthcheck": {**base_hc, "retries": 0}},
+        {"healthcheck": {**base_hc, "retries": -1}},
+        {"healthcheck": {**base_hc, "retries": True}},
+        {"healthcheck": {**base_hc, "retries": "3"}},
+    ]
+
+    for idx, bad_cfg in enumerate(invalid_cases):
+        errors = _validate_service_healthcheck(f"bad_{idx}", bad_cfg)  # type: ignore[arg-type]
+        assert errors, f"Expected validation error for case #{idx}: {bad_cfg!r}"
 
 
 def test_shell_scripts_use_bash_shebang_and_set_e() -> None:

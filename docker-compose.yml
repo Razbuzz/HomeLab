@@ -4,6 +4,12 @@ services:
     container_name: home_lab_dashboard
     ports:
       - "${DASHBOARD_PORT}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: always
 
   plex:
@@ -31,8 +37,13 @@ services:
               count: all
               capabilities: [gpu]
     runtime: nvidia
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:32400/identity >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
     restart: always
-
 
   qbittorrent:
     image: lscr.io/linuxserver/qbittorrent:latest
@@ -50,6 +61,12 @@ services:
       - "${QBITTORRENT_UI_PORT}:${QBITTORRENT_UI_PORT}"
       - "${QBITTORRENT_TORRENTING_PORT}:${QBITTORRENT_TORRENTING_PORT}"
       - "${QBITTORRENT_TORRENTING_PORT}:${QBITTORRENT_TORRENTING_PORT}/udp"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:$${WEBUI_PORT:-8080}/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: always
 
   filebrowser:
@@ -60,10 +77,16 @@ services:
     volumes:
       - ${DEFAULT_APPS_MOUNT}/${FILEBROWSER_FOLDER}/config:/config
       - ${DEFAULT_STORAGE_MOUNT}/:/srv
-    restart: always
     environment:
       - PUID=${DEFAULT_PUID}
       - PGID=${DEFAULT_GUID}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:80/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: always
 
   samba:
     image: dockurr/samba:4.22.6
@@ -78,6 +101,12 @@ services:
       - "${SAMBA_PORT}:445"
     volumes:
       - ${DEFAULT_STORAGE_MOUNT}:/storage
+    healthcheck:
+      test: ["CMD-SHELL", "smbclient --configfile=/etc/samba.conf -L //127.0.0.1 -U % -m SMB3 >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     restart: always
 
   sonarr:
@@ -94,6 +123,12 @@ services:
       - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/:/downloads
     ports:
       - "${SONARR_PORT}:8989"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8989/ping >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: always
 
   radarr:
@@ -110,6 +145,12 @@ services:
       - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/:/downloads
     ports:
       - "${RADARR_PORT}:7878"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:7878/ping >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: always
 
   jackett:
@@ -126,27 +167,13 @@ services:
       - ${DEFAULT_STORAGE_MOUNT}/${QBITTORRENT_FOLDER}/${QBITTORRENT_DOWNLOADS_FOLDER}/:/downloads
     ports:
       - "${JACKETT_PORT}:9117"
-    restart: always
-
-  threadfin:
-    image: fyb3roptik/threadfin:1.2.37
-    container_name: threadfin
-    environment:
-      - PUID=${DEFAULT_PUID}
-      - PGID=${DEFAULT_GUID}
-      - TZ=${DEFAULT_TIMEZONE}
-    volumes:
-      - ${DEFAULT_APPS_MOUNT}/${THREADFIN_FOLDER}/conf:/home/threadfin/conf
-      - ${DEFAULT_APPS_MOUNT}/${THREADFIN_FOLDER}/temp:/tmp/threadfin
-    ports:
-      - "${THREADFIN_PORT}:34400"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://$$(hostname -i):34400/web/ >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9117/health >/dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
-    restart: unless-stopped
+      start_period: 30s
+    restart: always
 
   maintainerr:
     image: ghcr.io/maintainerr/maintainerr:latest
@@ -160,6 +187,12 @@ services:
       - TZ=${DEFAULT_TIMEZONE}
     ports:
       - "${MAINTAINERR_PORT}:6246"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:6246/api/health/ready >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
     restart: always
 
   couchdb:
@@ -174,6 +207,12 @@ services:
       - ${DEFAULT_APPS_MOUNT}/${COUCHDB_FOLDER}/couchdb-etc:/opt/couchdb/etc/local.d
     ports:
       - "${COUCHDB_PORT}:5984"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:5984/_up >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: always
 
   pihole:
@@ -198,6 +237,12 @@ services:
       - "53:53/tcp"
       - "53:53/udp"
       - "${PI_HOLE_UI_PORT}:80/tcp"
+    healthcheck:
+      test: ["CMD-SHELL", "dig +short +norecurse +retry=0 @127.0.0.1 pi.hole >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
   seerr:
@@ -212,11 +257,11 @@ services:
     volumes:
       - ${DEFAULT_APPS_MOUNT}/${SEERR_FOLDER}/config:/app/config
     healthcheck:
-      test: wget --no-verbose --tries=1 --spider http://localhost:5055/api/v1/settings/public || exit 1
-      start_period: 20s
-      timeout: 3s
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:5055/api/v1/settings/public || exit 1"]
       interval: 15s
+      timeout: 3s
       retries: 3
+      start_period: 20s
     restart: unless-stopped
 
   flaresolverr:
@@ -229,6 +274,12 @@ services:
       - TZ=${DEFAULT_TIMEZONE}
     ports:
       - "${FLARESOLVERR_PORT}:8191"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8191/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
 
   ollama:
@@ -254,6 +305,12 @@ services:
               count: all
               capabilities: [gpu]
     runtime: nvidia
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
   hermes-agent:
@@ -264,7 +321,6 @@ services:
     command: ["gateway", "run"]
     depends_on:
       - ollama
-      - mattermost
     ports:
       - "${DEFAULT_LAN_IP}:${HERMES_DASHBOARD_PORT}:9119"
     volumes:
@@ -283,13 +339,6 @@ services:
       - HERMES_DASHBOARD_BASIC_AUTH_SECRET=${HERMES_DASHBOARD_BASIC_AUTH_SECRET}
       - API_SERVER_ENABLED=false
       - OPENROUTER_API_KEY=${HERMES_OPENROUTER_API_KEY}
-      - MATTERMOST_URL=${HERMES_MATTERMOST_URL}
-      - MATTERMOST_TOKEN=${HERMES_MATTERMOST_TOKEN}
-      - MATTERMOST_ALLOWED_USERS=${HERMES_MATTERMOST_ALLOWED_USERS}
-      - MATTERMOST_ALLOWED_CHANNELS=${HERMES_MATTERMOST_ALLOWED_CHANNELS}
-      - MATTERMOST_HOME_CHANNEL=${HERMES_MATTERMOST_HOME_CHANNEL}
-      - MATTERMOST_REPLY_MODE=${HERMES_MATTERMOST_REPLY_MODE}
-      - MATTERMOST_REQUIRE_MENTION=${HERMES_MATTERMOST_REQUIRE_MENTION}
     shm_size: "1g"
     mem_limit: 4g
     pids_limit: 512
@@ -308,35 +357,6 @@ services:
       start_period: 45s
     restart: unless-stopped
 
-  mattermost-db:
-    image: postgres:14-alpine
-    container_name: mattermost_db
-    environment:
-      - POSTGRES_USER=${MATTERMOST_DB_USER}
-      - POSTGRES_PASSWORD=${MATTERMOST_DB_PASSWORD}
-      - POSTGRES_DB=${MATTERMOST_DB_NAME}
-    volumes:
-      - ${DEFAULT_APPS_MOUNT}/${MATTERMOST_FOLDER}/db:/var/lib/postgresql/data
-    restart: always
-
-  mattermost:
-    image: mattermost/mattermost-team-edition:latest
-    container_name: mattermost
-    user: "2000:2000"
-    ports:
-      - "${MATTERMOST_PORT}:8065"
-    environment:
-      - TZ=${DEFAULT_TIMEZONE}
-      - MM_SQLSETTINGS_DRIVERNAME=postgres
-      - MM_SQLSETTINGS_DATASOURCE=postgres://${MATTERMOST_DB_USER}:${MATTERMOST_DB_PASSWORD}@mattermost-db:${MATTERMOST_DB_PORT}/${MATTERMOST_DB_NAME}?sslmode=disable&connect_timeout=10
-    volumes:
-      - ${DEFAULT_APPS_MOUNT}/${MATTERMOST_FOLDER}/data:/mattermost/data
-      - ${DEFAULT_APPS_MOUNT}/${MATTERMOST_FOLDER}/logs:/mattermost/logs
-      - ${DEFAULT_APPS_MOUNT}/${MATTERMOST_FOLDER}/config:/mattermost/config
-    depends_on:
-      - mattermost-db
-    restart: always
-
   qdirstat:
     image: jlesage/qdirstat
     container_name: qdirstat
@@ -345,4 +365,10 @@ services:
     volumes:
       - ${DEFAULT_APPS_MOUNT}/${QDirstat_FOLDER}/config:/config
       - ${DEFAULT_STORAGE_MOUNT}:/storage
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:5800/site.webmanifest"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     restart: always

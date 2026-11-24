@@ -73,7 +73,7 @@ security:
 browser:
   allow_private_urls: false
 
-# Gateway & Mattermost Behavior
+# Gateway Behavior
 gateway:
   allow_all_users: false
 

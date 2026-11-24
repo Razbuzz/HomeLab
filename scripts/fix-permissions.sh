@@ -35,7 +35,7 @@ load_env_file() {
 
   local -A _caller_set=()
   local _var
-  for _var in DEFAULT_PUID DEFAULT_GUID DEFAULT_APPS_MOUNT COUCHDB_FOLDER MATTERMOST_FOLDER SEERR_FOLDER; do
+  for _var in DEFAULT_PUID DEFAULT_GUID DEFAULT_APPS_MOUNT DEFAULT_STORAGE_MOUNT COUCHDB_FOLDER MAINTAINERR_FOLDER SEERR_FOLDER; do
     if [[ -n "${!_var+x}" ]]; then
       _caller_set["${_var}"]=1
     fi
@@ -59,7 +59,7 @@ load_env_file() {
 
     # Only import keys needed by this script; preserve caller overrides
     case "${key}" in
-      DEFAULT_PUID|DEFAULT_GUID|DEFAULT_APPS_MOUNT|COUCHDB_FOLDER|MATTERMOST_FOLDER|SEERR_FOLDER)
+      DEFAULT_PUID|DEFAULT_GUID|DEFAULT_APPS_MOUNT|DEFAULT_STORAGE_MOUNT|COUCHDB_FOLDER|MAINTAINERR_FOLDER|SEERR_FOLDER)
         ;;
       *)
         continue
@@ -91,8 +91,9 @@ load_env_file "${ENV_FILE}"
 DEFAULT_PUID="${DEFAULT_PUID:-1000}"
 DEFAULT_GUID="${DEFAULT_GUID:-1000}"
 DEFAULT_APPS_MOUNT="${DEFAULT_APPS_MOUNT:-./apps}"
+DEFAULT_STORAGE_MOUNT="${DEFAULT_STORAGE_MOUNT:-}"
 COUCHDB_FOLDER="${COUCHDB_FOLDER:-couch-db}"
-MATTERMOST_FOLDER="${MATTERMOST_FOLDER:-mattermost}"
+MAINTAINERR_FOLDER="${MAINTAINERR_FOLDER:-maintainerr}"
 SEERR_FOLDER="${SEERR_FOLDER:-seerr}"
 
 if [[ ! "${DEFAULT_PUID}" =~ ^[0-9]+$ ]]; then
@@ -104,38 +105,50 @@ if [[ ! "${DEFAULT_GUID}" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-# Resolve DEFAULT_APPS_MOUNT cleanly, handling ".", "/", and relative paths
-if [[ "${DEFAULT_APPS_MOUNT}" == "/" ]]; then
-  APPS_MOUNT="/"
-elif [[ "${DEFAULT_APPS_MOUNT}" == /* ]]; then
-  APPS_MOUNT="${DEFAULT_APPS_MOUNT%/}"
-  [[ -z "${APPS_MOUNT}" ]] && APPS_MOUNT="/"
-elif [[ "${DEFAULT_APPS_MOUNT}" == "." || "${DEFAULT_APPS_MOUNT}" == "./" ]]; then
-  APPS_MOUNT="${REPO_ROOT}"
-else
-  rel_mount="${DEFAULT_APPS_MOUNT#./}"
-  rel_mount="${rel_mount%/}"
-  if [[ -z "${rel_mount}" || "${rel_mount}" == "." ]]; then
-    APPS_MOUNT="${REPO_ROOT}"
+resolve_mount_path() {
+  local raw_mount="$1"
+  local resolved
+  if [[ "${raw_mount}" == "/" ]]; then
+    resolved="/"
+  elif [[ "${raw_mount}" == /* ]]; then
+    resolved="${raw_mount%/}"
+    [[ -z "${resolved}" ]] && resolved="/"
+  elif [[ "${raw_mount}" == "." || "${raw_mount}" == "./" ]]; then
+    resolved="${REPO_ROOT}"
   else
-    APPS_MOUNT="${REPO_ROOT}/${rel_mount}"
+    local rel_mount="${raw_mount#./}"
+    rel_mount="${rel_mount%/}"
+    if [[ -z "${rel_mount}" || "${rel_mount}" == "." ]]; then
+      resolved="${REPO_ROOT}"
+    else
+      resolved="${REPO_ROOT}/${rel_mount}"
+    fi
   fi
-fi
+  printf '%s\n' "${resolved}"
+}
 
-# Service volume ownership map: "<relative-dir-under-apps-mount>|<uid>|<gid>"
+# Resolve DEFAULT_APPS_MOUNT cleanly, handling ".", "/", and relative paths
+APPS_MOUNT="$(resolve_mount_path "${DEFAULT_APPS_MOUNT}")"
+
+# Service volume ownership map: "<base-dir>|<relative-dir>|<uid>|<gid>"
 # Add new non-root service directories here as needed.
 # Note:
-#   - Mattermost's `db` directory is intentionally omitted because the
-#     postgres image manages `/var/lib/postgresql/data` ownership itself.
 #   - Seerr runs rootless as `node` (1000:1000) and ignores PUID/PGID.
+#   - Maintainerr uses `type: bind` on `${DEFAULT_STORAGE_MOUNT}/${MAINTAINERR_FOLDER}/data`
+#     with `user: "${DEFAULT_PUID}:${DEFAULT_GUID}"`, so only manage it once
+#     `DEFAULT_STORAGE_MOUNT` is set to a real host path (not `CHANGE_TO_*`).
 OWNERSHIP_MAP=(
-  "${COUCHDB_FOLDER}/couchdb-data|${DEFAULT_PUID}|${DEFAULT_GUID}"
-  "${COUCHDB_FOLDER}/couchdb-etc|${DEFAULT_PUID}|${DEFAULT_GUID}"
-  "${MATTERMOST_FOLDER}/data|2000|2000"
-  "${MATTERMOST_FOLDER}/logs|2000|2000"
-  "${MATTERMOST_FOLDER}/config|2000|2000"
-  "${SEERR_FOLDER}/config|1000|1000"
+  "${APPS_MOUNT}|${COUCHDB_FOLDER}/couchdb-data|${DEFAULT_PUID}|${DEFAULT_GUID}"
+  "${APPS_MOUNT}|${COUCHDB_FOLDER}/couchdb-etc|${DEFAULT_PUID}|${DEFAULT_GUID}"
+  "${APPS_MOUNT}|${SEERR_FOLDER}/config|1000|1000"
 )
+
+if [[ -n "${DEFAULT_STORAGE_MOUNT}" && "${DEFAULT_STORAGE_MOUNT}" != CHANGE_TO_* ]]; then
+  STORAGE_MOUNT="$(resolve_mount_path "${DEFAULT_STORAGE_MOUNT}")"
+  OWNERSHIP_MAP+=(
+    "${STORAGE_MOUNT}|${MAINTAINERR_FOLDER}/data|${DEFAULT_PUID}|${DEFAULT_GUID}"
+  )
+fi
 
 require_sudo() {
   local action_desc="$1"
@@ -183,7 +196,7 @@ join_target_path() {
   fi
 }
 
-# Validate that neither APPS_MOUNT nor any intermediate path component under it
+# Validate that neither base mount nor any intermediate path component under it
 # (up to target_dir itself) is a symlink before touching directories.
 ensure_no_symlink_in_path() {
   local base="$1"
@@ -214,11 +227,11 @@ ensure_no_symlink_in_path() {
 
 changed=0
 for entry in "${OWNERSHIP_MAP[@]}"; do
-  IFS='|' read -r rel_dir uid gid <<< "${entry}"
+  IFS='|' read -r base_dir rel_dir uid gid <<< "${entry}"
   rel_dir="${rel_dir%/}"
-  target_dir="$(join_target_path "${APPS_MOUNT}" "${rel_dir}")"
+  target_dir="$(join_target_path "${base_dir}" "${rel_dir}")"
 
-  ensure_no_symlink_in_path "${APPS_MOUNT}" "${rel_dir}"
+  ensure_no_symlink_in_path "${base_dir}" "${rel_dir}"
 
   if [[ -e "${target_dir}" && ! -d "${target_dir}" ]]; then
     echo "Error: expected directory at ${target_dir}, found non-directory" >&2

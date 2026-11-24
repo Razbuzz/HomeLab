@@ -48,6 +48,7 @@ Every change that adds, renames, or removes an environment variable, service, or
 2. **`README.md` `.env` example block** — the ` ```yml ` block in Installation must mirror `.env` key-for-key, value-for-value, and in the exact same order (enforced automatically by `pytest`).
 3. **`README.md` service section** — document the service description, access URL/port, and any upgrade or migration notes.
 4. **Dashboard (`apps/home-server-dashboard/html/index.html`)** — add or update the entry in the `services` array when the service provides a web UI.
+5. **Healthcheck (`docker-compose.yml`)** — every service in `docker-compose.yml` must define a verified `healthcheck` (`test`, `interval`, `timeout`, `retries`), enforced automatically by `pytest`.
 
 ## Local Checks
 
@@ -67,3 +68,4 @@ Individual targets are also available:
 - `make lint` — run `yamllint`, `shellcheck`, and `hadolint` (if installed)
 - `make validate` — validate `docker-compose.yml` (using a temporary `DEFAULT_STORAGE_MOUNT` if `.env` still has the placeholder)
 - `make test` — run the `pytest` validation suite (`tests/`)
+- `make system-test` — run the full-stack end-to-end system test (`scripts/system-test.sh`): starts all 15 default services with `make up` using [`tests/docker-compose.ci.yml`](tests/docker-compose.ci.yml) in an isolated temp workspace, waits for every container to become `healthy`, verifies host-port HTTP responses, and tears down cleanly with `make down` (also runs as the required CI `System Test (make up)` stage)

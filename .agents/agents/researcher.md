@@ -25,7 +25,7 @@ For each candidate service or upgrade, research upstream documentation, containe
    - Select an explicit, pinned stable tag (e.g., `v1.2.3` or `3.5`)—never recommend `:latest` for new services.
    - Check multi-arch support, maintenance activity, and deprecation notices.
 2. **UID/GID & Volume Behavior**
-   - Determine whether the container supports `PUID`/`PGID` env vars, Docker `user: "${DEFAULT_PUID}:${DEFAULT_GUID}"`, or requires a fixed internal UID (like Mattermost `2000:2000`).
+   - Determine whether the container supports `PUID`/`PGID` env vars, Docker `user: "${DEFAULT_PUID}:${DEFAULT_GUID}"`, or requires a fixed internal UID (like Seerr `1000:1000`).
    - Identify required container paths and map them cleanly to `${DEFAULT_APPS_MOUNT}/<service>` vs `${DEFAULT_STORAGE_MOUNT}`.
 3. **Networking & Ports**
    - Document internal container port(s), web UI path (if any), and non-colliding host port variable(s).
