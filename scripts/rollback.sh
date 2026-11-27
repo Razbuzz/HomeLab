@@ -292,14 +292,52 @@ if [[ -n "${MAINTAINERR_ARCHIVE}" ]]; then
   MAINTAINERR_HAS_FOREIGN_OWNERS="${INSPECT_HAS_FOREIGN_OWNERS}"
 fi
 
-# Check whether target directories contain files/subdirs requiring root to move/delete.
+# Check whether target directories contain files/subdirs requiring root to move/delete,
+# optionally pruning excluded paths (`APPS_EXCLUDED_PATHS` `|`-separated spec) so
+# user-owned installs skip walking large regenerable media/model directories.
 dir_needs_root_to_modify() {
   local base_dir="$1"
+  local excluded_spec="${2:-}"
   [[ -d "${base_dir}" ]] || return 1
   [[ "$(id -u)" -eq 0 ]] && return 1
+
+  local -a find_expr=()
+  if [[ -n "${excluded_spec}" ]]; then
+    local -a raw_excludes=()
+    local -a valid_excludes=()
+    local raw_rel rel
+    IFS='|' read -r -a raw_excludes <<< "${excluded_spec}"
+    for raw_rel in "${raw_excludes[@]}"; do
+      rel="${raw_rel#./}"
+      rel="${rel%/}"
+      if [[ -z "${rel}" || "${rel}" == "." || "${rel}" == /* || "/${rel}/" == *"/../"* || "/${rel}/" == *"/./"* ]]; then
+        continue
+      fi
+      valid_excludes+=("./${rel}")
+    done
+    if [[ "${#valid_excludes[@]}" -gt 0 ]]; then
+      find_expr+=("(")
+      local first=true
+      local ex
+      for ex in "${valid_excludes[@]}"; do
+        if [[ "${first}" == true ]]; then
+          first=false
+        else
+          find_expr+=("-o")
+        fi
+        find_expr+=("-path" "${ex}")
+      done
+      find_expr+=(")" "-prune" "-o")
+    fi
+  fi
+  find_expr+=("!" "-uid" "$(id -u)" "-print" "-quit")
+
   local find_output=""
   local rc=0
-  find_output="$(find "${base_dir}" ! -uid "$(id -u)" -print -quit 2>&1)" || rc=$?
+  find_output="$(
+    cd "${base_dir}"
+    find . "${find_expr[@]}" 2>&1
+  )" || rc=$?
   [[ -n "${find_output}" || "${rc}" -ne 0 ]]
 }
 
@@ -346,7 +384,7 @@ ROLLBACK_NEEDS_ROOT=false
 if [[ "$(id -u)" -ne 0 ]]; then
   if [[ "${APPS_HAS_FOREIGN_OWNERS}" == true || "${MAINTAINERR_HAS_FOREIGN_OWNERS}" == true ]]; then
     ROLLBACK_NEEDS_ROOT=true
-  elif dir_needs_root_to_modify "${APPS_MOUNT}" || { [[ -n "${MAINTAINERR_DATA_DIR}" ]] && dir_needs_root_to_modify "${MAINTAINERR_DATA_DIR}"; }; then
+  elif dir_needs_root_to_modify "${APPS_MOUNT}" "${APPS_EXCLUDED_PATHS}" || { [[ -n "${MAINTAINERR_DATA_DIR}" ]] && dir_needs_root_to_modify "${MAINTAINERR_DATA_DIR}"; }; then
     ROLLBACK_NEEDS_ROOT=true
   fi
 fi
@@ -366,6 +404,23 @@ run_as_root() {
     fi
     sudo "$@"
   fi
+}
+
+path_exists_with_privs() {
+  local target="$1"
+  if [[ -e "${target}" || -L "${target}" ]]; then
+    return 0
+  fi
+  [[ "$(id -u)" -eq 0 ]] && return 1
+
+  local stat_err=""
+  stat_err="$(LC_ALL=C stat "${target}" 2>&1 || true)"
+  if [[ "${stat_err}" == *"Permission denied"* ]] || { [[ "${ROLLBACK_NEEDS_ROOT}" == true ]] && command -v sudo >/dev/null 2>&1; }; then
+    if run_as_root test -e "${target}" || run_as_root test -L "${target}"; then
+      return 0
+    fi
+  fi
+  return 1
 }
 
 mkdir_with_privs() {
@@ -393,14 +448,26 @@ run_extract_with_heartbeat() {
 
   local hb_pid=""
   (
+    trap '[[ -n "${sleep_pid:-}" ]] && kill "${sleep_pid}" 2>/dev/null || true; exit 0' TERM INT
     local start_ts=${SECONDS}
     local next_report=5
+    local next_sudo_refresh=60
+    local sleep_pid=""
     while kill -0 "${cmd_pid}" 2>/dev/null; do
-      sleep 1
+      sleep 1 &
+      sleep_pid=$!
+      wait "${sleep_pid}" 2>/dev/null || true
+      sleep_pid=""
       if ! kill -0 "${cmd_pid}" 2>/dev/null; then
         break
       fi
       local elapsed=$((SECONDS - start_ts))
+      if (( elapsed >= next_sudo_refresh )); then
+        if [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
+          sudo -n -v 2>/dev/null || true
+        fi
+        next_sudo_refresh=$((next_sudo_refresh + 60))
+      fi
       if (( elapsed >= next_report )); then
         printf '    ... restoring %s (%ss elapsed)\n' "${label}" "${elapsed}"
         next_report=$((next_report + 5))
@@ -411,7 +478,7 @@ run_extract_with_heartbeat() {
 
   local rc=0
   wait "${cmd_pid}" || rc=$?
-  kill "${hb_pid}" 2>/dev/null || true
+  kill -TERM "${hb_pid}" 2>/dev/null || true
   wait "${hb_pid}" 2>/dev/null || true
   return "${rc}"
 }
@@ -478,7 +545,7 @@ safe_restore_dir() {
       shopt -u dotglob nullglob
       local item
       for item in "${moved_items[@]}"; do
-        if [[ -e "${stage_dir}/${item}" || -L "${stage_dir}/${item}" ]]; then
+        if path_exists_with_privs "${stage_dir}/${item}"; then
           mv_with_privs "${stage_dir}/${item}" "${target_dir}/${item}" || true
         fi
       done
@@ -496,7 +563,7 @@ safe_restore_dir() {
     # Move any preserved excluded subpaths back to stage_dir first so rm_rf on target_dir
     # never deletes them before restoring the full staged snapshot.
     for item in "${restored_excluded[@]}"; do
-      if [[ -e "${target_dir}/${item}" || -L "${target_dir}/${item}" ]]; then
+      if path_exists_with_privs "${target_dir}/${item}"; then
         mkdir_with_privs "$(dirname "${stage_dir}/${item}")" || true
         mv_with_privs "${target_dir}/${item}" "${stage_dir}/${item}" || true
       fi
@@ -511,7 +578,7 @@ safe_restore_dir() {
     done
     shopt -u dotglob nullglob
     for item in "${moved_items[@]}"; do
-      if [[ -e "${stage_dir}/${item}" || -L "${stage_dir}/${item}" ]]; then
+      if path_exists_with_privs "${stage_dir}/${item}"; then
         mv_with_privs "${stage_dir}/${item}" "${target_dir}/${item}" || true
       fi
     done
@@ -535,13 +602,15 @@ safe_restore_dir() {
     for raw_rel in "${raw_excluded[@]}"; do
       rel="${raw_rel#./}"
       rel="${rel%/}"
-      [[ -z "${rel}" || "${rel}" == "." ]] && continue
+      if [[ -z "${rel}" || "${rel}" == "." || "${rel}" == /* || "/${rel}/" == *"/../"* || "/${rel}/" == *"/./"* ]]; then
+        continue
+      fi
       if [[ "${preserve_dashboard}" == "true" && "${rel}" == "home-server-dashboard" ]]; then
         continue
       fi
       src_path="${stage_dir}/${rel}"
       dst_path="${target_dir}/${rel}"
-      if [[ ( -e "${src_path}" || -L "${src_path}" ) && ! -e "${dst_path}" && ! -L "${dst_path}" ]]; then
+      if path_exists_with_privs "${src_path}" && ! path_exists_with_privs "${dst_path}"; then
         dst_parent="$(dirname "${dst_path}")"
         if ! mkdir_with_privs "${dst_parent}" || ! mv_with_privs "${src_path}" "${dst_path}"; then
           echo "Error: failed to re-attach preserved path '${rel}'; restoring previous directory contents..." >&2

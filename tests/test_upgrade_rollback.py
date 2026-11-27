@@ -1329,6 +1329,10 @@ exit 0
     fake_docker.chmod(0o755)
 
     # Also provide a no-op sudo shim in PATH in case fix-permissions needs it
+    fake_sudo = fake_bin / "sudo"
+    fake_sudo.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_sudo.chmod(0o755)
+
     res_recover = _run(
         [
             "bash",
@@ -1426,3 +1430,415 @@ exit 0
     assert "fatal crash in plex" in res_crash.stderr
     assert "Automatic rollback succeeded" in res_crash.stderr
     assert _run(["git", "-C", str(repo_dir), "rev-parse", "HEAD"]).stdout.strip() == LEGACY_COMMIT
+
+
+def test_backup_sigterm_terminates_active_archive_command_cleanly(tmp_path: Path) -> None:
+    repo_dir, bootstrap_dir, _storage_dir, backup_parent = _seed_legacy_repo_clone(tmp_path)
+
+    fake_bin = tmp_path / "sigterm-bin"
+    fake_bin.mkdir()
+    real_tar = shutil.which("tar")
+    assert real_tar is not None
+
+    tar_started = tmp_path / "tar-started"
+    tar_pid_file = tmp_path / "tar-child.pid"
+    fake_tar = fake_bin / "tar"
+    fake_tar.write_text(
+        f"""#!/usr/bin/env bash
+for arg in "$@"; do
+  if [[ "$arg" == *apps.tar* ]]; then
+    echo $$ > "{tar_pid_file}"
+    touch "{tar_started}"
+    while true; do
+      sleep 0.2
+    done
+  fi
+done
+exec "{real_tar}" "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_tar.chmod(0o755)
+
+    snap_dir = backup_parent / "sigterm-snap"
+    proc = subprocess.Popen(
+        [
+            "bash",
+            str(bootstrap_dir / "backup.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--backup-dir",
+            str(snap_dir),
+            "--skip-docker",
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    deadline = time.monotonic() + 10.0
+    while not tar_started.exists() and time.monotonic() < deadline:
+        if proc.poll() is not None:
+            break
+        time.sleep(0.05)
+
+    assert tar_started.exists(), "fake tar did not start in time"
+    tar_pid = int(tar_pid_file.read_text(encoding="utf-8").strip())
+
+    proc.send_signal(signal.SIGTERM)
+    _stdout, _stderr = proc.communicate(timeout=15)
+    assert proc.returncode != 0
+    assert not snap_dir.exists()
+
+    # Verify the active child tar command was terminated and not left orphaned
+    gone = False
+    reap_deadline = time.monotonic() + 3.0
+    while time.monotonic() < reap_deadline:
+        try:
+            os.kill(tar_pid, 0)
+        except ProcessLookupError:
+            gone = True
+            break
+        time.sleep(0.05)
+    assert gone, f"tar child PID {tar_pid} survived SIGTERM cleanup"
+
+
+def test_backup_broken_symlink_does_not_trigger_false_root_requirement(tmp_path: Path) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("Non-root false-positive symlink test only applies when running as non-root")
+
+    repo_dir, bootstrap_dir, _storage_dir, backup_parent = _seed_legacy_repo_clone(tmp_path)
+    broken_link = repo_dir / "apps" / "plex" / "config" / "broken-container-link"
+    broken_link.symlink_to("/nonexistent/container/internal/target")
+
+    # Provide a PATH without sudo: if path_needs_root false-positives on the broken symlink,
+    # backup.sh would fail trying to find/use sudo.
+    no_sudo_bin = tmp_path / "no-sudo-bin"
+    no_sudo_bin.mkdir()
+    for tool in (
+        "bash",
+        "git",
+        "tar",
+        "gzip",
+        "pigz",
+        "zstd",
+        "sha256sum",
+        "awk",
+        "realpath",
+        "dirname",
+        "basename",
+        "mktemp",
+        "mkdir",
+        "chmod",
+        "cp",
+        "rm",
+        "mv",
+        "ln",
+        "id",
+        "cat",
+        "grep",
+        "du",
+        "df",
+        "stat",
+        "find",
+        "date",
+    ):
+        found = shutil.which(tool)
+        if found:
+            os.symlink(found, no_sudo_bin / tool)
+
+    snap_dir = backup_parent / "broken-symlink-snap"
+    res = _run(
+        [
+            "bash",
+            str(bootstrap_dir / "backup.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--backup-dir",
+            str(snap_dir),
+            "--skip-docker",
+        ],
+        env={"PATH": str(no_sudo_bin)},
+    )
+    assert "Backup verified successfully." in res.stdout
+
+
+def test_rollback_priv_aware_path_exists_and_ignores_malformed_excluded_paths(tmp_path: Path) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("Non-root EACCES privilege-aware check only applies when running as non-root")
+
+    repo_dir, bootstrap_dir, _storage_dir, backup_parent = _seed_legacy_repo_clone(tmp_path)
+    apps_dir = repo_dir / "apps"
+
+    # Seed excluded model file inside ollama/models plus an included key
+    ollama_dir = apps_dir / "ollama"
+    ollama_model = ollama_dir / "models" / "blobs" / "sha256-restricted"
+    ollama_model.parent.mkdir(parents=True, exist_ok=True)
+    ollama_model.write_bytes(b"restricted-model-weights")
+    (ollama_dir / "id_ed25519").write_text("OLLAMA_KEY", encoding="utf-8")
+
+    snap_dir = backup_parent / "priv-snap"
+    _run(
+        [
+            "bash",
+            str(bootstrap_dir / "backup.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--backup-dir",
+            str(snap_dir),
+            "--skip-docker",
+        ]
+    )
+
+    # Inject malformed traversal / absolute excluded paths into metadata.env and re-sign SHA256SUMS
+    outside_sentinel = tmp_path / "outside-sentinel"
+    outside_sentinel.mkdir()
+    (outside_sentinel / "keep.txt").write_text("untouched", encoding="utf-8")
+    meta_path = snap_dir / "metadata.env"
+    meta_text = meta_path.read_text(encoding="utf-8")
+    meta_lines = []
+    for line in meta_text.splitlines():
+        if line.startswith("APPS_EXCLUDED_PATHS="):
+            meta_lines.append(
+                "APPS_EXCLUDED_PATHS=./home-server-dashboard|./ollama/models|/etc|../outside-sentinel|./foo/../bar"
+            )
+        else:
+            meta_lines.append(line)
+    meta_path.write_text("\n".join(meta_lines) + "\n", encoding="utf-8")
+    meta_path.chmod(0o600)
+
+    # Recompute SHA256SUMS
+    meta_info = _parse_kv_file(meta_path)
+    checksum_lines: list[str] = []
+    for fname in (".env", "metadata.env", meta_info["APPS_ARCHIVE"], meta_info.get("MAINTAINERR_ARCHIVE", "")):
+        if not fname:
+            continue
+        fpath = snap_dir / fname
+        if fpath.is_file():
+            checksum_lines.append(f"{hashlib.sha256(fpath.read_bytes()).hexdigest()}  {fname}")
+    (snap_dir / "SHA256SUMS").write_text("\n".join(checksum_lines) + "\n", encoding="utf-8")
+
+    # Simulate a non-searchable root-owned directory (mode 0700 root:root) where unprivileged
+    # bash `[[ -e ... || -L ... ]]` returns false due to EACCES while `sudo test -e` succeeds.
+    locked_dir = apps_dir / "ollama"
+    restricted_calls_log = tmp_path / "sudo-priv-calls.log"
+    fake_bin = tmp_path / "priv-fake-bin"
+    fake_bin.mkdir()
+
+    # Locking `ollama` to mode 0000 causes EACCES on unprivileged path lookup even for the
+    # owner. Our mock `sudo` temporarily grants 0755 on locked_dir during the privileged
+    # command (simulating root bypassing DAC permissions) and restores 0000 afterwards.
+    fake_sudo = fake_bin / "sudo"
+    fake_sudo.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{restricted_calls_log}"
+if [[ "${{1:-}}" == "-v" || "${{1:-}}" == "-n" ]]; then
+  exit 0
+fi
+relock_paths=()
+for p in "{apps_dir}/ollama" "{tmp_path}/HomeLab/.homelab-restore-stage."*/ollama; do
+  if [[ -d "$p" ]]; then
+    chmod 0755 "$p"
+    relock_paths+=("$p")
+  fi
+done
+rc=0
+"$@" || rc=$?
+for p in "${{relock_paths[@]}}"; do
+  if [[ -d "$p" ]]; then
+    chmod 0000 "$p"
+  fi
+done
+exit "$rc"
+""",
+        encoding="utf-8",
+    )
+    fake_sudo.chmod(0o755)
+
+    locked_dir.chmod(0o000)
+    try:
+        rb = _run(
+            [
+                "bash",
+                str(bootstrap_dir / "rollback.sh"),
+                "--repo-dir",
+                str(repo_dir),
+                "--backup",
+                str(snap_dir),
+                "--skip-docker",
+                "--yes",
+            ],
+            env={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        )
+        assert "Rollback completed successfully" in rb.stdout
+    finally:
+        if locked_dir.exists():
+            locked_dir.chmod(0o755)
+
+    sudo_log_lines = restricted_calls_log.read_text(encoding="utf-8").splitlines()
+    assert any(line.startswith("test -e ") and "ollama/models" in line for line in sudo_log_lines)
+    assert ollama_model.read_bytes() == b"restricted-model-weights"
+    assert (outside_sentinel / "keep.txt").read_text(encoding="utf-8") == "untouched"
+
+
+def test_backup_dry_run_root_notice_and_upgrade_nonfatal_sudo_preauth(tmp_path: Path) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("Non-root sudo behavior test only applies when running as non-root")
+
+    repo_dir, bootstrap_dir, _storage_dir, backup_parent = _seed_legacy_repo_clone(tmp_path)
+
+    # 1. backup.sh --dry-run with restricted dir prints upfront notice before calling sudo du
+    restricted_dir = repo_dir / "apps" / "plex" / "config" / "locked-sub"
+    restricted_dir.mkdir(parents=True, exist_ok=True)
+    restricted_dir.chmod(0o000)
+
+    fake_bin = tmp_path / "dry-sudo-bin"
+    fake_bin.mkdir()
+    real_du = shutil.which("du")
+    assert real_du is not None
+    fake_sudo = fake_bin / "sudo"
+    fake_sudo.write_text(
+        f"""#!/usr/bin/env bash
+if [[ "${{1:-}}" == "-v" ]]; then
+  exit 0
+fi
+if [[ "${{1:-}}" == "du" ]]; then
+  chmod 0755 "{restricted_dir}"
+  rc=0
+  "{real_du}" "${{@:2}}" || rc=$?
+  chmod 0000 "{restricted_dir}"
+  exit "$rc"
+fi
+exec "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_sudo.chmod(0o755)
+
+    try:
+        dry = _run(
+            [
+                "bash",
+                str(bootstrap_dir / "backup.sh"),
+                "--repo-dir",
+                str(repo_dir),
+                "--backup-dir",
+                str(backup_parent / "dry-notice"),
+                "--skip-docker",
+                "--dry-run",
+            ],
+            env={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        )
+        assert "Root privileges required for restricted service directories" in dry.stdout
+        assert "[dry-run] Needs sudo:       true" in dry.stdout
+    finally:
+        if restricted_dir.exists():
+            restricted_dir.chmod(0o755)
+
+    # 2. upgrade.sh continues when upfront `sudo -v` fails under a TTY for a user who owns all files
+    import pty
+
+    upg_bin = tmp_path / "tty-upgrade-bin"
+    upg_bin.mkdir()
+    (upg_bin / "docker").write_text(
+        """#!/usr/bin/env bash
+if [[ "$1" == "compose" ]]; then
+  shift
+  case "$1" in
+    config)
+      if [[ "$*" == *"--services"* ]]; then
+        printf 'plex\\n'
+      fi
+      ;;
+    ps)
+      if [[ "$*" == *"-q"* ]]; then
+        printf 'deadbeef1234567890\\n'
+      fi
+      ;;
+  esac
+elif [[ "$1" == "inspect" ]]; then
+  if [[ "$3" == *"State.Status"* ]]; then
+    printf 'running\\n'
+  elif [[ "$3" == *"State.Health"* ]]; then
+    printf 'healthy\\n'
+  elif [[ "$3" == *"State.Running"* ]]; then
+    printf 'false\\n'
+  fi
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    (upg_bin / "docker").chmod(0o755)
+    # sudo fails -v (simulating non-sudoer), and succeeds no-op for fix-permissions if UID != 1000
+    (upg_bin / "sudo").write_text(
+        """#!/usr/bin/env bash
+if [[ "${1:-}" == "-v" ]]; then
+  exit 1
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    (upg_bin / "sudo").chmod(0o755)
+
+    master_fd, slave_fd = pty.openpty()
+    output_chunks: list[bytes] = []
+    try:
+        proc = subprocess.Popen(
+            [
+                "bash",
+                str(bootstrap_dir / "upgrade.sh"),
+                "--repo-dir",
+                str(repo_dir),
+                "--target",
+                "target-release",
+                "--skip-fetch",
+                "--no-pull",
+                "--timeout",
+                "20",
+            ],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            env={
+                **os.environ,
+                "HOMELAB_BACKUP_DIR": str(backup_parent),
+                "PATH": f"{upg_bin}:{os.environ['PATH']}",
+            },
+            close_fds=True,
+            start_new_session=True,
+        )
+        os.close(slave_fd)
+        slave_fd = -1
+
+        import select
+
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            rlist, _, _ = select.select([master_fd], [], [], 0.2)
+            if rlist:
+                try:
+                    data = os.read(master_fd, 4096)
+                except OSError:
+                    break
+                if not data:
+                    break
+                output_chunks.append(data)
+            elif proc.poll() is not None:
+                break
+        rc = proc.wait(timeout=10)
+    finally:
+        if slave_fd >= 0:
+            os.close(slave_fd)
+        os.close(master_fd)
+
+    pty_output = b"".join(output_chunks).decode("utf-8", errors="replace")
+    assert rc == 0, f"upgrade.sh failed with rc={rc}:\n{pty_output}"
+    assert "Note: sudo credentials not cached; continuing without pre-authentication" in pty_output
+    assert "Upgrade complete!" in pty_output

@@ -299,9 +299,14 @@ fi
 
 # Pre-authenticate sudo upfront before entering the backup.sh | tee pipeline so
 # any sudo password prompt appears cleanly instead of stalling mid-upgrade.
+# If sudo -v fails (e.g., user is in the docker group without sudo access and owns
+# all data files), warn and continue; backup.sh / fix-permissions.sh will still
+# require sudo if elevated privileges are genuinely needed.
 if [[ "$(id -u)" -ne 0 && "${SKIP_DOCKER}" != true && -t 0 ]] && command -v sudo >/dev/null 2>&1; then
   echo "==> Verifying sudo credentials before starting backup/upgrade..."
-  sudo -v
+  if ! sudo -v; then
+    echo "Note: sudo credentials not cached; continuing without pre-authentication" >&2
+  fi
 fi
 
 UPGRADE_IN_PROGRESS=false

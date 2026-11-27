@@ -372,7 +372,7 @@ path_needs_root() {
     done
     find_expr+=(")" "-prune" "-o")
   fi
-  find_expr+=("!" "-readable" "-print" "-quit")
+  find_expr+=("!" "-type" "l" "!" "-readable" "-print" "-quit")
 
   find_output="$(
     cd "${base_dir}"
@@ -400,13 +400,18 @@ if [[ -n "${MAINTAINERR_DATA_DIR}" && -d "${MAINTAINERR_DATA_DIR}" ]]; then
   fi
 fi
 
-if [[ "${NEEDS_ROOT}" == true && "${DRY_RUN}" != true ]]; then
+if [[ "${NEEDS_ROOT}" == true ]]; then
   if ! command -v sudo >/dev/null 2>&1; then
     echo "Error: root-owned or mode-restricted files detected in source data, and 'sudo' is not installed." >&2
     exit 1
   fi
+  if [[ "${DRY_RUN}" == true ]]; then
+    echo "==> Root privileges required for restricted service directories (needed for size estimation)..."
+  fi
   if [[ -t 0 ]]; then
-    echo "==> Root privileges required for restricted service directories; verifying sudo credentials..."
+    if [[ "${DRY_RUN}" != true ]]; then
+      echo "==> Root privileges required for restricted service directories; verifying sudo credentials..."
+    fi
     sudo -v
   fi
 fi
@@ -520,6 +525,7 @@ STACK_WAS_STOPPED=false
 BACKUP_CREATED_BY_US=false
 BACKUP_COMPLETED=false
 ACTIVE_HB_PID=""
+ACTIVE_CMD_PID=""
 
 compose_cmd() {
   (
@@ -552,16 +558,86 @@ restart_stack() {
   STACK_WAS_STOPPED=false
 }
 
+collect_descendant_pids() {
+  local parent_pid="$1"
+  local child_pid=""
+  while IFS= read -r child_pid; do
+    [[ -n "${child_pid}" ]] || continue
+    collect_descendant_pids "${child_pid}"
+    printf '%s\n' "${child_pid}"
+  done < <(pgrep -P "${parent_pid}" 2>/dev/null || true)
+}
+
+signal_pid_with_privs() {
+  local sig="$1"
+  local pid="$2"
+  kill "-${sig}" "${pid}" 2>/dev/null && return 0
+  if [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
+    sudo kill "-${sig}" "${pid}" 2>/dev/null && return 0
+  fi
+  return 1
+}
+
+pid_is_alive() {
+  local pid="$1"
+  kill -0 "${pid}" 2>/dev/null && return 0
+  if [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
+    sudo kill -0 "${pid}" 2>/dev/null && return 0
+  fi
+  return 1
+}
+
+stop_active_cmd() {
+  local pid="${ACTIVE_CMD_PID}"
+  [[ -n "${pid}" ]] || return 0
+  ACTIVE_CMD_PID=""
+
+  local -a target_pids=()
+  local desc_pid=""
+  while IFS= read -r desc_pid; do
+    [[ -n "${desc_pid}" ]] && target_pids+=("${desc_pid}")
+  done < <(collect_descendant_pids "${pid}")
+  target_pids+=("${pid}")
+
+  local p=""
+  for p in "${target_pids[@]}"; do
+    if pid_is_alive "${p}"; then
+      signal_pid_with_privs TERM "${p}" || true
+    fi
+  done
+
+  local _ alive
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    alive=false
+    for p in "${target_pids[@]}"; do
+      if pid_is_alive "${p}"; then
+        alive=true
+        break
+      fi
+    done
+    [[ "${alive}" == true ]] || break
+    sleep 0.2
+  done
+
+  for p in "${target_pids[@]}"; do
+    if pid_is_alive "${p}"; then
+      signal_pid_with_privs KILL "${p}" || true
+    fi
+  done
+  wait "${pid}" 2>/dev/null || true
+}
+
 cleanup() {
   local rc=$?
   trap - EXIT
   trap '' INT TERM HUP
   set +e
   if [[ -n "${ACTIVE_HB_PID}" ]]; then
-    kill "${ACTIVE_HB_PID}" 2>/dev/null || true
+    kill -TERM "${ACTIVE_HB_PID}" 2>/dev/null || true
     wait "${ACTIVE_HB_PID}" 2>/dev/null || true
     ACTIVE_HB_PID=""
   fi
+  stop_active_cmd
   if [[ "${BACKUP_COMPLETED}" != true && "${BACKUP_CREATED_BY_US}" == true && -d "${BACKUP_DIR}" ]]; then
     rm -rf "${BACKUP_DIR}" 2>/dev/null || true
   fi
@@ -585,16 +661,29 @@ run_with_heartbeat() {
 
   "$@" &
   local cmd_pid=$!
+  ACTIVE_CMD_PID="${cmd_pid}"
 
   (
+    trap '[[ -n "${sleep_pid:-}" ]] && kill "${sleep_pid}" 2>/dev/null || true; exit 0' TERM INT
     local start_ts=${SECONDS}
     local next_report=5
+    local next_sudo_refresh=60
+    local sleep_pid=""
     while kill -0 "${cmd_pid}" 2>/dev/null; do
-      sleep 1
+      sleep 1 &
+      sleep_pid=$!
+      wait "${sleep_pid}" 2>/dev/null || true
+      sleep_pid=""
       if ! kill -0 "${cmd_pid}" 2>/dev/null; then
         break
       fi
       local elapsed=$((SECONDS - start_ts))
+      if (( elapsed >= next_sudo_refresh )); then
+        if [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
+          sudo -n -v 2>/dev/null || true
+        fi
+        next_sudo_refresh=$((next_sudo_refresh + 60))
+      fi
       if (( elapsed >= next_report )); then
         local bytes=0
         if [[ -n "${watch_file}" && -f "${watch_file}" ]]; then
@@ -610,7 +699,8 @@ run_with_heartbeat() {
 
   local rc=0
   wait "${cmd_pid}" || rc=$?
-  kill "${ACTIVE_HB_PID}" 2>/dev/null || true
+  ACTIVE_CMD_PID=""
+  kill -TERM "${ACTIVE_HB_PID}" 2>/dev/null || true
   wait "${ACTIVE_HB_PID}" 2>/dev/null || true
   ACTIVE_HB_PID=""
   return "${rc}"
