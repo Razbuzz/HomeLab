@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.1] - 2026-11-27
+
+### Bug Fixes
+
+- **ops:** Fix heartbeat cleanup, priv-aware rollback, and test shim ([a1091a2](https://github.com/Razbuzz/HomeLab/commit/a1091a265265cf955cb59b52713f9e54c27c3e45))
+- **ops:** Speed up backup/rollback and handle upgrade health delays ([f909bc0](https://github.com/Razbuzz/HomeLab/commit/f909bc0d58ecbd158acff59ad6d7075647c4f9b9))
+
 ## [1.5.0] - 2026-11-24
 
 ### Features

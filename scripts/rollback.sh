@@ -183,6 +183,8 @@ HAD_BETA_RUNNING="$(read_kv_var "${BACKUP_DIR}/metadata.env" "HAD_BETA_RUNNING" 
 ENV_SHA256="$(read_kv_var "${BACKUP_DIR}/metadata.env" "ENV_SHA256" "")"
 APPS_ARCHIVE="$(read_kv_var "${BACKUP_DIR}/metadata.env" "APPS_ARCHIVE" "")"
 MAINTAINERR_ARCHIVE="$(read_kv_var "${BACKUP_DIR}/metadata.env" "MAINTAINERR_ARCHIVE" "")"
+APPS_EXCLUDED_PATHS="$(read_kv_var "${BACKUP_DIR}/metadata.env" "APPS_EXCLUDED_PATHS" "./home-server-dashboard")"
+[[ -z "${APPS_EXCLUDED_PATHS}" ]] && APPS_EXCLUDED_PATHS="./home-server-dashboard"
 
 if [[ "${BACKUP_VERSION}" != "1" ]]; then
   echo "Error: unsupported BACKUP_VERSION '${BACKUP_VERSION}' in metadata.env" >&2
@@ -207,16 +209,74 @@ if [[ -z "${ENV_SHA256}" || "${ACTUAL_BACKUP_ENV_SHA}" != "${ENV_SHA256}" ]]; th
   exit 1
 fi
 
+# Determine tar compression flags from archive filename (returns via global TAR_DECOMPRESS_ARGS).
+TAR_DECOMPRESS_ARGS=()
+set_tar_decompress_args() {
+  local archive="$1"
+  TAR_DECOMPRESS_ARGS=()
+  case "${archive}" in
+    *.tar.zst|*.tzst)
+      if ! command -v zstd >/dev/null 2>&1; then
+        echo "Error: 'zstd' is required to inspect/extract ${archive}. Install it with: sudo apt-get install -y zstd" >&2
+        exit 1
+      fi
+      TAR_DECOMPRESS_ARGS=(-I "zstd -dc")
+      ;;
+    *.tar.gz|*.tgz)
+      if ! command -v gzip >/dev/null 2>&1; then
+        echo "Error: 'gzip' is required to inspect/extract ${archive}" >&2
+        exit 1
+      fi
+      TAR_DECOMPRESS_ARGS=(-z)
+      ;;
+    *.tar)
+      TAR_DECOMPRESS_ARGS=()
+      ;;
+    *)
+      echo "Error: unsupported archive format '${archive}' (expected .tar.zst, .tar.gz, or .tar)" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# Single-pass archive inspection: verifies tar stream readability AND checks for
+# foreign UIDs/GIDs in one decompression pass (sets INSPECT_HAS_FOREIGN_OWNERS).
+INSPECT_HAS_FOREIGN_OWNERS=false
+inspect_archive() {
+  local archive_path="$1"
+  set_tar_decompress_args "${archive_path}"
+
+  local cur_uid cur_gid listing
+  cur_uid="$(id -u)"
+  cur_gid="$(id -g)"
+  if ! listing="$(tar "${TAR_DECOMPRESS_ARGS[@]}" --numeric-owner -tvf "${archive_path}")"; then
+    echo "Error: failed to read archive: ${archive_path}" >&2
+    return 1
+  fi
+
+  INSPECT_HAS_FOREIGN_OWNERS=false
+  if [[ "${cur_uid}" -ne 0 ]]; then
+    local foreign_line=""
+    foreign_line="$(awk -v expected="${cur_uid}/${cur_gid}" '$2 != "" && $2 != expected {print $2; exit}' <<< "${listing}")"
+    if [[ -n "${foreign_line}" ]]; then
+      INSPECT_HAS_FOREIGN_OWNERS=true
+    fi
+  fi
+}
+
+APPS_HAS_FOREIGN_OWNERS=false
 if [[ -n "${APPS_ARCHIVE}" ]]; then
   if [[ ! -f "${BACKUP_DIR}/${APPS_ARCHIVE}" ]]; then
     echo "Error: missing apps archive: ${BACKUP_DIR}/${APPS_ARCHIVE}" >&2
     exit 1
   fi
-  echo "==> Verifying ${APPS_ARCHIVE} readability..."
-  tar -tzf "${BACKUP_DIR}/${APPS_ARCHIVE}" >/dev/null
+  echo "==> Verifying ${APPS_ARCHIVE} readability & ownership..."
+  inspect_archive "${BACKUP_DIR}/${APPS_ARCHIVE}"
+  APPS_HAS_FOREIGN_OWNERS="${INSPECT_HAS_FOREIGN_OWNERS}"
 fi
 
 MAINTAINERR_DATA_DIR=""
+MAINTAINERR_HAS_FOREIGN_OWNERS=false
 if [[ -n "${MAINTAINERR_ARCHIVE}" ]]; then
   if [[ ! -f "${BACKUP_DIR}/${MAINTAINERR_ARCHIVE}" ]]; then
     echo "Error: missing Maintainerr archive: ${BACKUP_DIR}/${MAINTAINERR_ARCHIVE}" >&2
@@ -227,19 +287,70 @@ if [[ -n "${MAINTAINERR_ARCHIVE}" ]]; then
     exit 1
   fi
   MAINTAINERR_DATA_DIR="$(realpath -m "${STORAGE_MOUNT}/${MAINTAINERR_FOLDER}/data")"
-  echo "==> Verifying ${MAINTAINERR_ARCHIVE} readability..."
-  tar -tzf "${BACKUP_DIR}/${MAINTAINERR_ARCHIVE}" >/dev/null
+  echo "==> Verifying ${MAINTAINERR_ARCHIVE} readability & ownership..."
+  inspect_archive "${BACKUP_DIR}/${MAINTAINERR_ARCHIVE}"
+  MAINTAINERR_HAS_FOREIGN_OWNERS="${INSPECT_HAS_FOREIGN_OWNERS}"
 fi
+
+# Check whether target directories contain files/subdirs requiring root to move/delete,
+# optionally pruning excluded paths (`APPS_EXCLUDED_PATHS` `|`-separated spec) so
+# user-owned installs skip walking large regenerable media/model directories.
+dir_needs_root_to_modify() {
+  local base_dir="$1"
+  local excluded_spec="${2:-}"
+  [[ -d "${base_dir}" ]] || return 1
+  [[ "$(id -u)" -eq 0 ]] && return 1
+
+  local -a find_expr=()
+  if [[ -n "${excluded_spec}" ]]; then
+    local -a raw_excludes=()
+    local -a valid_excludes=()
+    local raw_rel rel
+    IFS='|' read -r -a raw_excludes <<< "${excluded_spec}"
+    for raw_rel in "${raw_excludes[@]}"; do
+      rel="${raw_rel#./}"
+      rel="${rel%/}"
+      if [[ -z "${rel}" || "${rel}" == "." || "${rel}" == /* || "/${rel}/" == *"/../"* || "/${rel}/" == *"/./"* ]]; then
+        continue
+      fi
+      valid_excludes+=("./${rel}")
+    done
+    if [[ "${#valid_excludes[@]}" -gt 0 ]]; then
+      find_expr+=("(")
+      local first=true
+      local ex
+      for ex in "${valid_excludes[@]}"; do
+        if [[ "${first}" == true ]]; then
+          first=false
+        else
+          find_expr+=("-o")
+        fi
+        find_expr+=("-path" "${ex}")
+      done
+      find_expr+=(")" "-prune" "-o")
+    fi
+  fi
+  find_expr+=("!" "-uid" "$(id -u)" "-print" "-quit")
+
+  local find_output=""
+  local rc=0
+  find_output="$(
+    cd "${base_dir}"
+    find . "${find_expr[@]}" 2>&1
+  )" || rc=$?
+  [[ -n "${find_output}" || "${rc}" -ne 0 ]]
+}
 
 if [[ "${DRY_RUN}" == true ]]; then
   echo "[dry-run] Backup verified: ${BACKUP_DIR}"
   echo "[dry-run] Would restore repository ${REPO_DIR} to commit ${GIT_COMMIT} (branch: ${GIT_BRANCH:-detached})"
   echo "[dry-run] Would restore .env (sha256: ${ENV_SHA256})"
   if [[ -n "${APPS_ARCHIVE}" ]]; then
-    echo "[dry-run] Would restore ${APPS_MOUNT} from ${APPS_ARCHIVE} (preserving home-server-dashboard)"
+    echo "[dry-run] Would restore ${APPS_MOUNT} from ${APPS_ARCHIVE} (foreign_owners=${APPS_HAS_FOREIGN_OWNERS})"
+    echo "[dry-run] Preserved paths: ${APPS_EXCLUDED_PATHS}"
   fi
   if [[ -n "${MAINTAINERR_ARCHIVE}" ]]; then
-    echo "[dry-run] Would restore ${MAINTAINERR_DATA_DIR} from ${MAINTAINERR_ARCHIVE}"
+    echo "[dry-run] Would restore ${MAINTAINERR_DATA_DIR} from ${MAINTAINERR_ARCHIVE} (foreign_owners=${MAINTAINERR_HAS_FOREIGN_OWNERS})"
   fi
   if [[ "${SKIP_DOCKER}" == true ]]; then
     echo "[dry-run] Docker: skipped (--skip-docker)"
@@ -268,6 +379,21 @@ if [[ "${ASSUME_YES}" != true ]]; then
   fi
 fi
 
+# Pre-authenticate sudo upfront when foreign owners or non-owned target paths exist.
+ROLLBACK_NEEDS_ROOT=false
+if [[ "$(id -u)" -ne 0 ]]; then
+  if [[ "${APPS_HAS_FOREIGN_OWNERS}" == true || "${MAINTAINERR_HAS_FOREIGN_OWNERS}" == true ]]; then
+    ROLLBACK_NEEDS_ROOT=true
+  elif dir_needs_root_to_modify "${APPS_MOUNT}" "${APPS_EXCLUDED_PATHS}" || { [[ -n "${MAINTAINERR_DATA_DIR}" ]] && dir_needs_root_to_modify "${MAINTAINERR_DATA_DIR}"; }; then
+    ROLLBACK_NEEDS_ROOT=true
+  fi
+fi
+
+if [[ "${ROLLBACK_NEEDS_ROOT}" == true && -t 0 ]] && command -v sudo >/dev/null 2>&1; then
+  echo "==> Root privileges required for restoring owned directories; verifying sudo credentials..."
+  sudo -v
+fi
+
 run_as_root() {
   if [[ "$(id -u)" -eq 0 ]]; then
     "$@"
@@ -278,6 +404,23 @@ run_as_root() {
     fi
     sudo "$@"
   fi
+}
+
+path_exists_with_privs() {
+  local target="$1"
+  if [[ -e "${target}" || -L "${target}" ]]; then
+    return 0
+  fi
+  [[ "$(id -u)" -eq 0 ]] && return 1
+
+  local stat_err=""
+  stat_err="$(LC_ALL=C stat "${target}" 2>&1 || true)"
+  if [[ "${stat_err}" == *"Permission denied"* ]] || { [[ "${ROLLBACK_NEEDS_ROOT}" == true ]] && command -v sudo >/dev/null 2>&1; }; then
+    if run_as_root test -e "${target}" || run_as_root test -L "${target}"; then
+      return 0
+    fi
+  fi
+  return 1
 }
 
 mkdir_with_privs() {
@@ -296,41 +439,76 @@ rm_rf_with_privs() {
   rm -rf "${target}" 2>/dev/null || run_as_root rm -rf "${target}"
 }
 
-archive_has_foreign_owners() {
-  local archive="$1"
-  local cur_uid cur_gid
-  cur_uid="$(id -u)"
-  cur_gid="$(id -g)"
-  local owners
-  if ! owners="$(tar --numeric-owner -tvzf "${archive}" | awk '{print $2}')"; then
-    return 0
-  fi
-  local pair
-  while IFS= read -r pair; do
-    [[ -z "${pair}" ]] && continue
-    if [[ "${pair}" != "${cur_uid}/${cur_gid}" ]]; then
-      return 0
-    fi
-  done <<< "${owners}"
-  return 1
+run_extract_with_heartbeat() {
+  local label="$1"
+  shift
+
+  "$@" &
+  local cmd_pid=$!
+
+  local hb_pid=""
+  (
+    trap '[[ -n "${sleep_pid:-}" ]] && kill "${sleep_pid}" 2>/dev/null || true; exit 0' TERM INT
+    local start_ts=${SECONDS}
+    local next_report=5
+    local next_sudo_refresh=60
+    local sleep_pid=""
+    while kill -0 "${cmd_pid}" 2>/dev/null; do
+      sleep 1 &
+      sleep_pid=$!
+      wait "${sleep_pid}" 2>/dev/null || true
+      sleep_pid=""
+      if ! kill -0 "${cmd_pid}" 2>/dev/null; then
+        break
+      fi
+      local elapsed=$((SECONDS - start_ts))
+      if (( elapsed >= next_sudo_refresh )); then
+        if [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
+          sudo -n -v 2>/dev/null || true
+        fi
+        next_sudo_refresh=$((next_sudo_refresh + 60))
+      fi
+      if (( elapsed >= next_report )); then
+        printf '    ... restoring %s (%ss elapsed)\n' "${label}" "${elapsed}"
+        next_report=$((next_report + 5))
+      fi
+    done
+  ) &
+  hb_pid=$!
+
+  local rc=0
+  wait "${cmd_pid}" || rc=$?
+  kill -TERM "${hb_pid}" 2>/dev/null || true
+  wait "${hb_pid}" 2>/dev/null || true
+  return "${rc}"
 }
 
 tar_extract() {
   local archive="$1"
   local target_dir="$2"
-  if [[ "$(id -u)" -ne 0 ]] && archive_has_foreign_owners "${archive}"; then
-    run_as_root tar --same-owner --numeric-owner -xzpf "${archive}" -C "${target_dir}"
+  local has_foreign_owners="$3"
+  local archive_name
+  archive_name="$(basename "${archive}")"
+  set_tar_decompress_args "${archive}"
+
+  if [[ "$(id -u)" -ne 0 && "${has_foreign_owners}" == "true" ]]; then
+    run_extract_with_heartbeat "${archive_name}" \
+      run_as_root tar "${TAR_DECOMPRESS_ARGS[@]}" --same-owner --numeric-owner -xpf "${archive}" -C "${target_dir}"
     return $?
   fi
-  if ! tar --same-owner --numeric-owner -xzpf "${archive}" -C "${target_dir}" 2>/dev/null; then
-    run_as_root tar --same-owner --numeric-owner -xzpf "${archive}" -C "${target_dir}"
+  if ! run_extract_with_heartbeat "${archive_name}" \
+    tar "${TAR_DECOMPRESS_ARGS[@]}" --same-owner --numeric-owner -xpf "${archive}" -C "${target_dir}" 2>/dev/null; then
+    run_extract_with_heartbeat "${archive_name}" \
+      run_as_root tar "${TAR_DECOMPRESS_ARGS[@]}" --same-owner --numeric-owner -xpf "${archive}" -C "${target_dir}"
   fi
 }
 
 safe_restore_dir() {
   local target_dir="$1"
   local archive_path="$2"
-  local preserve_dashboard="$3"
+  local has_foreign_owners="$3"
+  local preserve_dashboard="$4"
+  local excluded_paths_spec="${5:-}"
 
   mkdir_with_privs "${target_dir}"
 
@@ -367,7 +545,7 @@ safe_restore_dir() {
       shopt -u dotglob nullglob
       local item
       for item in "${moved_items[@]}"; do
-        if [[ -e "${stage_dir}/${item}" || -L "${stage_dir}/${item}" ]]; then
+        if path_exists_with_privs "${stage_dir}/${item}"; then
           mv_with_privs "${stage_dir}/${item}" "${target_dir}/${item}" || true
         fi
       done
@@ -379,26 +557,70 @@ safe_restore_dir() {
   done
   shopt -u dotglob nullglob
 
-  if ! tar_extract "${archive_path}" "${target_dir}"; then
-    echo "Error: archive extraction failed; restoring previous directory contents..." >&2
-    local item
+  rollback_stage_restore() {
+    local item entry_path entry_base
+    local -a restored_excluded=("$@")
+    # Move any preserved excluded subpaths back to stage_dir first so rm_rf on target_dir
+    # never deletes them before restoring the full staged snapshot.
+    for item in "${restored_excluded[@]}"; do
+      if path_exists_with_privs "${target_dir}/${item}"; then
+        mkdir_with_privs "$(dirname "${stage_dir}/${item}")" || true
+        mv_with_privs "${target_dir}/${item}" "${stage_dir}/${item}" || true
+      fi
+    done
     shopt -s dotglob nullglob
-    for entry in "${target_dir}"/*; do
-      base="$(basename "${entry}")"
-      if [[ "${preserve_dashboard}" == "true" && "${base}" == "home-server-dashboard" ]]; then
+    for entry_path in "${target_dir}"/*; do
+      entry_base="$(basename "${entry_path}")"
+      if [[ "${preserve_dashboard}" == "true" && "${entry_base}" == "home-server-dashboard" ]]; then
         continue
       fi
-      rm_rf_with_privs "${entry}"
+      rm_rf_with_privs "${entry_path}" || true
     done
     shopt -u dotglob nullglob
     for item in "${moved_items[@]}"; do
-      if [[ -e "${stage_dir}/${item}" || -L "${stage_dir}/${item}" ]]; then
-        mv_with_privs "${stage_dir}/${item}" "${target_dir}/${item}"
+      if path_exists_with_privs "${stage_dir}/${item}"; then
+        mv_with_privs "${stage_dir}/${item}" "${target_dir}/${item}" || true
       fi
     done
-    rm_rf_with_privs "${stage_dir}"
+    rm_rf_with_privs "${stage_dir}" || true
+  }
+
+  if ! tar_extract "${archive_path}" "${target_dir}" "${has_foreign_owners}"; then
+    echo "Error: archive extraction failed; restoring previous directory contents..." >&2
+    rollback_stage_restore
     restore_signal_traps
     return 1
+  fi
+
+  # Re-attach any excluded heavy subpaths from stage_dir via O(1) same-filesystem rename
+  # (preserving Ollama models and Plex Media/Cache/Logs untouched in place).
+  if [[ -n "${excluded_paths_spec}" ]]; then
+    local -a raw_excluded=()
+    local -a restored_excluded=()
+    local raw_rel rel src_path dst_path dst_parent
+    IFS='|' read -r -a raw_excluded <<< "${excluded_paths_spec}"
+    for raw_rel in "${raw_excluded[@]}"; do
+      rel="${raw_rel#./}"
+      rel="${rel%/}"
+      if [[ -z "${rel}" || "${rel}" == "." || "${rel}" == /* || "/${rel}/" == *"/../"* || "/${rel}/" == *"/./"* ]]; then
+        continue
+      fi
+      if [[ "${preserve_dashboard}" == "true" && "${rel}" == "home-server-dashboard" ]]; then
+        continue
+      fi
+      src_path="${stage_dir}/${rel}"
+      dst_path="${target_dir}/${rel}"
+      if path_exists_with_privs "${src_path}" && ! path_exists_with_privs "${dst_path}"; then
+        dst_parent="$(dirname "${dst_path}")"
+        if ! mkdir_with_privs "${dst_parent}" || ! mv_with_privs "${src_path}" "${dst_path}"; then
+          echo "Error: failed to re-attach preserved path '${rel}'; restoring previous directory contents..." >&2
+          rollback_stage_restore "${restored_excluded[@]}"
+          restore_signal_traps
+          return 1
+        fi
+        restored_excluded+=("${rel}")
+      fi
+    done
   fi
 
   rm_rf_with_privs "${stage_dir}"
@@ -418,7 +640,7 @@ if [[ "${SKIP_DOCKER}" != true ]]; then
     exit 1
   fi
   echo "==> Stopping running containers..."
-  compose_cmd --profile '*' down --remove-orphans || true
+  compose_cmd --profile '*' down --remove-orphans || compose_cmd down --remove-orphans || true
 fi
 
 echo "==> Checking out git commit ${GIT_COMMIT}..."
@@ -440,12 +662,12 @@ fi
 
 if [[ -n "${APPS_ARCHIVE}" ]]; then
   echo "==> Restoring ${APPS_MOUNT} from ${APPS_ARCHIVE}..."
-  safe_restore_dir "${APPS_MOUNT}" "${BACKUP_DIR}/${APPS_ARCHIVE}" "true"
+  safe_restore_dir "${APPS_MOUNT}" "${BACKUP_DIR}/${APPS_ARCHIVE}" "${APPS_HAS_FOREIGN_OWNERS}" "true" "${APPS_EXCLUDED_PATHS}"
 fi
 
 if [[ -n "${MAINTAINERR_ARCHIVE}" ]]; then
   echo "==> Restoring ${MAINTAINERR_DATA_DIR} from ${MAINTAINERR_ARCHIVE}..."
-  safe_restore_dir "${MAINTAINERR_DATA_DIR}" "${BACKUP_DIR}/${MAINTAINERR_ARCHIVE}" "false"
+  safe_restore_dir "${MAINTAINERR_DATA_DIR}" "${BACKUP_DIR}/${MAINTAINERR_ARCHIVE}" "${MAINTAINERR_HAS_FOREIGN_OWNERS}" "false" ""
 fi
 
 if [[ "${SKIP_DOCKER}" != true && "${NO_START}" != true ]]; then
