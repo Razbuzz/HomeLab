@@ -15,12 +15,18 @@ HomeLab includes an automated, zero-data-loss workflow to back up configuration 
 make backup
 # Optional custom destination:
 make backup BACKUP=/mnt/backups/homelab-manual
+
+# Include multi-GB regenerable paths (Ollama models, Plex Cache/Media/Logs):
+bash scripts/backup.sh --include-heavy
+
+# Write uncompressed .tar archives (zero compression CPU overhead):
+bash scripts/backup.sh --no-compress
 ```
 
 ### Upgrade to the latest release (or a specific ref)
 
 ```bash
-# Preview target version, disk headroom, and .env merge without modifying anything:
+# Preview target version, disk headroom, exclusions, and .env merge without modifying anything:
 bash scripts/upgrade.sh --dry-run
 
 # Upgrade to the latest semver tag (v*.*.*):
@@ -32,6 +38,9 @@ make upgrade TARGET=main
 
 # Upgrade including the optional Hermes Agent beta profile:
 bash scripts/upgrade.sh --beta
+
+# Forward backup flags or adjust healthcheck timeout (default: 300s):
+bash scripts/upgrade.sh --include-heavy --timeout 420
 ```
 
 ### Roll back manually to a verified backup
@@ -74,7 +83,7 @@ Older commits such as `ec3a6250bfa6d6d1391e1a14100b3342ecef2cc5` do not yet incl
    bash /tmp/hl-up/upgrade.sh --repo-dir /mnt/HomeLab --target "${TARGET_REF}" --dry-run
    ```
 
-4. **Execute the live upgrade** (takes a crash-consistent backup outside `/mnt/HomeLab`, merges `.env`, repairs permissions, starts the stack, and verifies all healthchecks):
+4. **Execute the live upgrade** (takes a crash-consistent backup outside `/mnt/HomeLab`, merges `.env`, repairs permissions, pulls updated images, starts the stack, and verifies all healthchecks):
 
    ```bash
    bash /tmp/hl-up/upgrade.sh --repo-dir /mnt/HomeLab --target "${TARGET_REF}"
@@ -95,19 +104,22 @@ Older commits such as `ec3a6250bfa6d6d1391e1a14100b3342ecef2cc5` do not yet incl
 
 Backups are stored by default outside the repository at `${HOMELAB_BACKUP_DIR:-$(dirname "$REPO_DIR")/homelab-backups}/<UTC_TIMESTAMP>-<SHORT_SHA>` with a `latest` symlink pointing to the newest snapshot (when using `--backup-dir`, `latest` is not modified outside the default backup root).
 
+`backup.sh` performs a single upfront privilege check (`path_needs_root` + `sudo -v`), auto-selects the fastest available compression (`zstd -T0 -3` → `.tar.zst`, `pigz -1` → `.tar.gz`, or `gzip -1` → `.tar.gz`, or plain `.tar` with `--no-compress`), prints a live 5-second MiB/elapsed heartbeat for longer runs, and checks archive stream integrity in a single pass.
+
 | Item | Included | Notes |
 | :--- | :--- | :--- |
 | `.env` | Yes (`0600`) | Copied verbatim and SHA-256 verified before & after copy. |
-| `metadata.env` | Yes (`0600`) | Records `GIT_COMMIT`, `GIT_BRANCH`, `GIT_TAG`, mount paths, `HAD_BETA_RUNNING`, and `ENV_SHA256`. |
-| `${DEFAULT_APPS_MOUNT}` | Yes (`apps.tar.gz`) | Archived with `tar --numeric-owner` so non-root UIDs/GIDs (CouchDB, Seerr, etc.) stay intact. |
-| `apps/home-server-dashboard` | **Excluded** | Tracked in git and rebuilt from the checked-out commit on upgrade/rollback. |
-| `${DEFAULT_STORAGE_MOUNT}/${MAINTAINERR_FOLDER}/data` | Yes (`maintainerr-data.tar.gz`) | Backed up automatically whenever `DEFAULT_STORAGE_MOUNT` is configured and the directory exists. |
+| `metadata.env` | Yes (`0600`) | Records `GIT_COMMIT`, `GIT_BRANCH`, `GIT_TAG`, mount paths, `HAD_BETA_RUNNING`, `ENV_SHA256`, `ARCHIVE_COMPRESSION`, and `APPS_EXCLUDED_PATHS`. |
+| `${DEFAULT_APPS_MOUNT}` | Yes (`apps.tar.zst` / `apps.tar.gz` / `apps.tar`) | Archived with `tar --numeric-owner` in a single pass so non-root UIDs/GIDs (CouchDB, Seerr, etc.) stay intact. |
+| `apps/home-server-dashboard` | **Excluded** (always) | Tracked in git and rebuilt from the checked-out commit on upgrade/rollback. |
+| `${OLLAMA_FOLDER}/models` & Plex `Cache`/`Media`/`Crash Reports`/`Diagnostics`/`Logs`/`Updates` | **Excluded by default** (pass `--include-heavy` to archive) | Multi-GB already-compressed weights and regenerable thumbnails/logs/caches. Recorded in `APPS_EXCLUDED_PATHS` and **preserved untouched in place** on rollback via O(1) rename; Plex `Preferences.xml` and `Plug-in Support/Databases` plus Ollama keys (`id_ed25519`) are always backed up. |
+| `${DEFAULT_STORAGE_MOUNT}/${MAINTAINERR_FOLDER}/data` | Yes (`maintainerr-data.tar.*`) | Backed up automatically whenever `DEFAULT_STORAGE_MOUNT` is configured and the directory exists. |
 | Large media libraries (`movies`, `tv`, `downloads`) | **Excluded** | Only application configs/databases in `apps` and Maintainerr data are archived; media files on `DEFAULT_STORAGE_MOUNT` are untouched. |
-| `SHA256SUMS` | Yes (`0600`) | Verified via `sha256sum -c SHA256SUMS` at backup completion and before every rollback. |
+| `SHA256SUMS` | Yes (`0600`) | Generated once during backup (verifying `.env` and `metadata.env` locally without re-reading multi-GB archives) and fully verified via `sha256sum -c SHA256SUMS` before every rollback. |
 
 Before stopping containers or writing files, `backup.sh` also verifies:
 - `APPS_MOUNT` exists, and the backup directory is neither inside nor an ancestor of `REPO_DIR`, `APPS_MOUNT`, or `MAINTAINERR_DATA_DIR` (and any existing custom `--backup-dir` is empty).
-- The destination filesystem has enough free space (`du -sk` of sources + **20% headroom**).
+- The destination filesystem has enough free space (`du -sk` of included sources + **20% headroom**, checked in a single pass).
 - Unless `--online` or `--skip-docker` is passed, containers are stopped gracefully (`docker compose --profile '*' down`) for crash-consistent SQLite/CouchDB backups and restarted afterwards (unless `--no-restart` on a successful backup; mid-backup failures always restart stopped containers).
 
 ---
@@ -130,9 +142,11 @@ When upgrading across releases, `upgrade.sh` merges your backed-up `.env` into t
 
 ## Automatic and Manual Rollback Behavior
 
-If any step inside `upgrade.sh` fails after the backup completes — including an unresolved `CHANGE_TO_*` placeholder, invalid Compose config, failing permission repair, container crash (`exited`/`dead`), `unhealthy` status, or healthcheck timeout — `upgrade.sh`:
+During health verification, `upgrade.sh` pulls updated images in a dedicated step (`docker compose pull`), starts the stack, and waits up to `--timeout` seconds (default `300`) for all services to report `running` and `healthy`. Containers that report transient `unhealthy` states during database migrations or warm-up (for example Plex, Pi-hole, or Sonarr) are allowed to recover until the timeout expires, whereas crashed containers (`exited` or `dead`) fail fast immediately.
+
+If any step inside `upgrade.sh` fails after the backup completes — including an unresolved `CHANGE_TO_*` placeholder, invalid Compose config, failing permission repair, container crash (`exited`/`dead`), or healthcheck timeout — `upgrade.sh`:
 
 1. Prints the last 60 lines of logs for any failing container.
 2. Automatically invokes `scripts/rollback.sh --backup "${BACKUP_PATH}" --yes` (unless `--no-auto-rollback` was passed).
-3. Verifies `SHA256SUMS` and tar archive readability before touching git or host directories.
-4. Stops containers (`--remove-orphans`), checks out the exact pre-upgrade `GIT_COMMIT` / `GIT_BRANCH`, restores `.env` (`0600`) with SHA-256 verification, atomically swaps `${APPS_MOUNT}` (preserving `home-server-dashboard`) and Maintainerr data back from archives, and starts the restored stack **without `--pull always`** so your pre-upgrade container images are reused immediately.
+3. Verifies `SHA256SUMS` and inspects archive readability/ownership in a single decompression pass (`.tar.zst`, `.tar.gz`, and `.tar`) before touching git or host directories.
+4. Stops containers (`--remove-orphans`), checks out the exact pre-upgrade `GIT_COMMIT` / `GIT_BRANCH`, restores `.env` (`0600`) with SHA-256 verification, atomically swaps `${APPS_MOUNT}` (preserving `home-server-dashboard` and re-attaching all `APPS_EXCLUDED_PATHS` such as Ollama models and Plex media/caches untouched in place) and Maintainerr data back from archives, and starts the restored stack **without pulling new images** so your pre-upgrade container images are reused immediately.

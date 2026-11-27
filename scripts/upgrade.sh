@@ -23,10 +23,12 @@ Options:
   --target <ref>       Git ref/tag/commit to upgrade to (default: latest v*.*.* tag)
   --repo-dir <dir>     Path to HomeLab git repository (default: auto-detected)
   --backup-dir <dir>   Custom backup directory to store pre-upgrade snapshot
+  --include-heavy      Include heavy regenerable paths (Ollama models, Plex caches) in backup
+  --no-compress        Write uncompressed .tar backup archives
   --beta               Enable beta profile (e.g. Hermes Agent) during checks and startup
-  --timeout <sec>      Healthcheck wait timeout in seconds (default: 240)
+  --timeout <sec>      Healthcheck wait timeout in seconds (default: 300)
   --no-auto-rollback   Do not automatically roll back if upgrade fails
-  --no-pull            Do not pass --pull always to docker compose up
+  --no-pull            Skip pulling new container images before docker compose up
   --skip-docker        Skip Docker Compose validation, permissions, startup, and health checks
   --skip-fetch         Skip git fetch origin --tags --prune
   --force              Proceed even if HEAD is already at the resolved target commit
@@ -38,8 +40,10 @@ EOF
 TARGET_ARG=""
 CUSTOM_REPO_DIR=""
 CUSTOM_BACKUP_DIR=""
+INCLUDE_HEAVY=false
+NO_COMPRESS=false
 BETA=false
-TIMEOUT=240
+TIMEOUT=300
 AUTO_ROLLBACK=true
 NO_PULL=false
 SKIP_DOCKER=false
@@ -63,6 +67,14 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { echo "Error: --backup-dir requires an argument" >&2; exit 1; }
       CUSTOM_BACKUP_DIR="$2"
       shift 2
+      ;;
+    --include-heavy)
+      INCLUDE_HEAVY=true
+      shift
+      ;;
+    --no-compress)
+      NO_COMPRESS=true
+      shift
       ;;
     --beta)
       BETA=true
@@ -255,6 +267,12 @@ if [[ "${DRY_RUN}" == true ]]; then
   if [[ -n "${CUSTOM_BACKUP_DIR}" ]]; then
     backup_dry_args+=(--backup-dir "${CUSTOM_BACKUP_DIR}")
   fi
+  if [[ "${INCLUDE_HEAVY}" == true ]]; then
+    backup_dry_args+=(--include-heavy)
+  fi
+  if [[ "${NO_COMPRESS}" == true ]]; then
+    backup_dry_args+=(--no-compress)
+  fi
   if [[ "${SKIP_DOCKER}" == true ]]; then
     backup_dry_args+=(--skip-docker)
   fi
@@ -277,6 +295,18 @@ if [[ "${DRY_RUN}" == true ]]; then
   python3 "${SCRIPT_DIR}/merge-env.py" "${merge_dry_args[@]}"
   echo "[dry-run] Dry-run complete; no files or containers were modified."
   exit 0
+fi
+
+# Pre-authenticate sudo upfront before entering the backup.sh | tee pipeline so
+# any sudo password prompt appears cleanly instead of stalling mid-upgrade.
+# If sudo -v fails (e.g., user is in the docker group without sudo access and owns
+# all data files), warn and continue; backup.sh / fix-permissions.sh will still
+# require sudo if elevated privileges are genuinely needed.
+if [[ "$(id -u)" -ne 0 && "${SKIP_DOCKER}" != true && -t 0 ]] && command -v sudo >/dev/null 2>&1; then
+  echo "==> Verifying sudo credentials before starting backup/upgrade..."
+  if ! sudo -v; then
+    echo "Note: sudo credentials not cached; continuing without pre-authentication" >&2
+  fi
 fi
 
 UPGRADE_IN_PROGRESS=false
@@ -334,6 +364,12 @@ echo "==> Creating pre-upgrade backup..."
 backup_args=(--repo-dir "${REPO_DIR}" --no-restart)
 if [[ -n "${CUSTOM_BACKUP_DIR}" ]]; then
   backup_args+=(--backup-dir "${CUSTOM_BACKUP_DIR}")
+fi
+if [[ "${INCLUDE_HEAVY}" == true ]]; then
+  backup_args+=(--include-heavy)
+fi
+if [[ "${NO_COMPRESS}" == true ]]; then
+  backup_args+=(--no-compress)
 fi
 if [[ "${SKIP_DOCKER}" == true ]]; then
   backup_args+=(--skip-docker)
@@ -401,7 +437,9 @@ wait_for_services_healthy() {
     for service in "${services[@]}"; do
       IFS='|' read -r status health cid <<< "$(get_service_state "${service}")"
 
-      if [[ "${status}" == "exited" || "${status}" == "dead" || "${health}" == "unhealthy" ]]; then
+      # Fail fast only on container crashes (exited/dead); allow transient 'unhealthy'
+      # during startup/DB migrations (e.g. Plex/Pi-hole/Sonarr) to recover before timeout.
+      if [[ "${status}" == "exited" || "${status}" == "dead" ]]; then
         echo "" >&2
         echo "Error: service '${service}' entered failure state (status=${status}, health=${health})" >&2
         if [[ -n "${cid}" ]]; then
@@ -493,15 +531,17 @@ if [[ "${SKIP_DOCKER}" != true ]]; then
     bash "${REPO_DIR}/scripts/fix-permissions.sh"
   fi
 
-  # Step 6: Start upgraded stack
-  echo "==> Starting upgraded HomeLab stack..."
-  up_args=(up -d --build --remove-orphans)
+  # Step 6: Pull updated container images before restarting containers
   if [[ "${NO_PULL}" != true ]]; then
-    up_args+=(--pull always)
+    echo "==> Pulling updated container images..."
+    compose_cmd "${compose_profile_args[@]}" pull
   fi
-  compose_cmd "${compose_profile_args[@]}" "${up_args[@]}"
 
-  # Step 7: Verify all started services become healthy
+  # Step 7: Start upgraded stack
+  echo "==> Starting upgraded HomeLab stack..."
+  compose_cmd "${compose_profile_args[@]}" up -d --build --remove-orphans
+
+  # Step 8: Verify all started services become healthy
   mapfile -t TARGET_SERVICES < <(compose_cmd "${compose_profile_args[@]}" config --services)
   wait_for_services_healthy "${TARGET_SERVICES[@]}"
 fi
