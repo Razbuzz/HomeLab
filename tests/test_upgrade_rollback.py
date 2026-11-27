@@ -333,10 +333,14 @@ def test_e2e_bootstrap_upgrade_and_manual_rollback_from_ec3a6250(tmp_path: Path)
     latest_backup = (backup_parent / "latest").resolve()
     assert latest_backup.is_dir()
     _run(["sha256sum", "-c", "SHA256SUMS"], cwd=latest_backup)
-    apps_listing = _run(["tar", "-tzf", str(latest_backup / "apps.tar.gz")]).stdout
+    meta = _parse_kv_file(latest_backup / "metadata.env")
+    apps_archive_name = meta["APPS_ARCHIVE"]
+    maint_archive_name = meta["MAINTAINERR_ARCHIVE"]
+    assert (latest_backup / apps_archive_name).is_file()
+    assert (latest_backup / maint_archive_name).is_file()
+    apps_listing = _list_tar_entries(latest_backup / apps_archive_name)
     assert "home-server-dashboard" not in apps_listing
     assert "plex/config/Preferences.xml" in apps_listing
-    assert (latest_backup / "maintainerr-data.tar.gz").is_file()
 
     # App data & git-tracked dashboard remain intact after upgrade
     assert (repo_dir / "apps" / "plex" / "config" / "Preferences.xml").read_bytes() == pre_upgrade_prefs
@@ -595,8 +599,18 @@ def test_rollback_detects_foreign_uids_and_recovers_staged_data_without_sudo(tmp
         ]
     )
 
-    # Replace apps.tar.gz with a synthetic archive containing a foreign UID/GID entry (5984:5984)
-    # and update SHA256SUMS accordingly so checksum validation succeeds.
+    meta = _parse_kv_file(backup_dir / "metadata.env")
+    orig_apps_archive = meta["APPS_ARCHIVE"]
+    orig_maint_archive = meta.get("MAINTAINERR_ARCHIVE", "")
+    # Replace apps.tar.gz (explicitly testing .tar.gz foreign-UID detection as well)
+    # and update metadata.env + SHA256SUMS accordingly.
+    if orig_apps_archive != "apps.tar.gz":
+        (backup_dir / orig_apps_archive).unlink()
+        meta_text = (backup_dir / "metadata.env").read_text(encoding="utf-8")
+        meta_text = meta_text.replace(f"APPS_ARCHIVE={orig_apps_archive}", "APPS_ARCHIVE=apps.tar.gz")
+        meta_text = meta_text.replace("ARCHIVE_COMPRESSION=zstd", "ARCHIVE_COMPRESSION=gzip")
+        (backup_dir / "metadata.env").write_text(meta_text, encoding="utf-8")
+
     synthetic_tar = backup_dir / "apps.tar.gz"
     with tarfile.open(synthetic_tar, "w:gz") as tf:
         ti = tarfile.TarInfo("./couch-db/couchdb-data/foreign.couch")
@@ -609,7 +623,9 @@ def test_rollback_detects_foreign_uids_and_recovers_staged_data_without_sudo(tmp
     synthetic_tar.chmod(0o600)
 
     checksum_lines: list[str] = []
-    for fname in (".env", "metadata.env", "apps.tar.gz", "maintainerr-data.tar.gz"):
+    for fname in (".env", "metadata.env", "apps.tar.gz", orig_maint_archive):
+        if not fname:
+            continue
         fpath = backup_dir / fname
         if fpath.is_file():
             digest = hashlib.sha256(fpath.read_bytes()).hexdigest()
@@ -622,7 +638,7 @@ def test_rollback_detects_foreign_uids_and_recovers_staged_data_without_sudo(tmp
     # a non-root environment where sudo is unavailable.
     fake_bin = tmp_path / "no-sudo-bin"
     fake_bin.mkdir()
-    for tool in ("bash", "git", "tar", "gzip", "sha256sum", "awk", "realpath", "dirname", "basename", "mktemp", "mv", "rm", "mkdir", "chmod", "cp", "id", "cat", "grep", "tail", "cut", "tee", "python3"):
+    for tool in ("bash", "git", "tar", "gzip", "zstd", "sha256sum", "awk", "realpath", "dirname", "basename", "mktemp", "mv", "rm", "mkdir", "chmod", "cp", "id", "cat", "grep", "tail", "cut", "tee", "python3", "find"):
         found = shutil.which(tool)
         if found:
             os.symlink(found, fake_bin / tool)
@@ -684,7 +700,7 @@ exec "$@"
     assert "Rollback completed successfully" in rb_sudo.stdout
     sudo_calls = sudo_log.read_text(encoding="utf-8").splitlines()
     assert any(
-        "tar --same-owner --numeric-owner -xzpf" in line and "apps.tar.gz" in line
+        "tar -z --same-owner --numeric-owner -xpf" in line and "apps.tar.gz" in line
         for line in sudo_calls
     )
     assert (repo_dir / "apps" / "couch-db" / "couchdb-data" / "foreign.couch").read_bytes() == b"foreign-uid-payload"
@@ -814,14 +830,14 @@ exit 0
     )
     fake_docker.chmod(0o755)
 
-    # Make tar fail mid-backup when invoked to create apps.tar.gz (while allowing tar -tzf / system tools)
+    # Make tar fail mid-backup when invoked to create apps archive (while allowing other system tools)
     real_tar = shutil.which("tar")
     assert real_tar is not None
     fake_tar = fake_bin / "tar"
     fake_tar.write_text(
         f"""#!/usr/bin/env bash
 for arg in "$@"; do
-  if [[ "$arg" == *apps.tar.gz* ]]; then
+  if [[ "$arg" == *apps.tar* ]]; then
     exit 2
   fi
 done
@@ -974,3 +990,439 @@ exit 0
     assert (repo_dir / "apps" / "plex" / "config" / "Preferences.xml").read_bytes() == pre_prefs
     assert (storage_dir / "maintainerr" / "data" / "maintainerr.sqlite").read_bytes() == pre_maint
     assert time.monotonic() > 0
+
+
+def _parse_kv_file(path: Path) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        result[k.strip()] = v.strip()
+    return result
+
+
+def _list_tar_entries(archive_path: Path) -> str:
+    name = archive_path.name
+    if name.endswith(".tar.zst") or name.endswith(".tzst"):
+        return _run(["tar", "-I", "zstd -dc", "-tf", str(archive_path)]).stdout
+    if name.endswith(".tar.gz") or name.endswith(".tgz"):
+        return _run(["tar", "-tzf", str(archive_path)]).stdout
+    return _run(["tar", "-tf", str(archive_path)]).stdout
+
+
+def test_backup_excludes_heavy_paths_and_rollback_preserves_them_with_spaces(tmp_path: Path) -> None:
+    repo_dir, bootstrap_dir, _storage_dir, backup_parent = _seed_legacy_repo_clone(tmp_path)
+    apps_dir = repo_dir / "apps"
+
+    # Seed heavy regenerable directories + essential DBs/keys (including paths with spaces)
+    ollama_model = apps_dir / "ollama" / "models" / "blobs" / "sha256-fake-model"
+    ollama_model.parent.mkdir(parents=True, exist_ok=True)
+    ollama_model.write_bytes(b"fake-gguf-weights-payload")
+
+    ollama_key = apps_dir / "ollama" / "id_ed25519"
+    ollama_key.write_text("PRIVATE_KEY_DATA", encoding="utf-8")
+
+    plex_root = apps_dir / "plex" / "config" / "Library" / "Application Support" / "Plex Media Server"
+    plex_thumb = plex_root / "Media" / "thumb.bif"
+    plex_thumb.parent.mkdir(parents=True, exist_ok=True)
+    plex_thumb.write_bytes(b"regenerable-thumbnail-bif")
+
+    plex_cache = plex_root / "Cache" / "photo.jpg"
+    plex_cache.parent.mkdir(parents=True, exist_ok=True)
+    plex_cache.write_bytes(b"regenerable-cache")
+
+    plex_logs = plex_root / "Logs" / "Plex Media Server.log"
+    plex_logs.parent.mkdir(parents=True, exist_ok=True)
+    plex_logs.write_text("plex log line", encoding="utf-8")
+
+    plex_db = plex_root / "Plug-in Support" / "Databases" / "com.plexapp.plugins.library.db"
+    plex_db.parent.mkdir(parents=True, exist_ok=True)
+    plex_db.write_bytes(b"SQLITE_LIBRARY_DB_V1")
+
+    snap_dir = backup_parent / "fast-snap"
+    res = _run(
+        [
+            "bash",
+            str(bootstrap_dir / "backup.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--backup-dir",
+            str(snap_dir),
+            "--skip-docker",
+        ]
+    )
+    assert "Backup verified successfully." in res.stdout
+
+    meta = _parse_kv_file(snap_dir / "metadata.env")
+    archive_path = snap_dir / meta["APPS_ARCHIVE"]
+    assert archive_path.is_file()
+    assert "./ollama/models" in meta["APPS_EXCLUDED_PATHS"]
+    assert "./plex/config/Library/Application Support/Plex Media Server/Media" in meta["APPS_EXCLUDED_PATHS"]
+
+    listing = _list_tar_entries(archive_path)
+    assert "ollama/models" not in listing
+    assert "Plex Media Server/Media" not in listing
+    assert "Plex Media Server/Cache" not in listing
+    assert "Plex Media Server/Logs" not in listing
+    assert "ollama/id_ed25519" in listing
+    assert "Plug-in Support/Databases/com.plexapp.plugins.library.db" in listing
+
+    # Mutate backed-up config/DB & delete key while keeping heavy excluded directories intact
+    plex_db.write_bytes(b"CORRUPTED_DB")
+    ollama_key.unlink()
+    (apps_dir / "post-upgrade-junk").mkdir()
+
+    rb = _run(
+        [
+            "bash",
+            str(bootstrap_dir / "rollback.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--backup",
+            str(snap_dir),
+            "--skip-docker",
+            "--yes",
+        ]
+    )
+    assert "Rollback completed successfully" in rb.stdout
+
+    # Essential configs/DBs are restored and post-upgrade junk is gone
+    assert plex_db.read_bytes() == b"SQLITE_LIBRARY_DB_V1"
+    assert ollama_key.read_text(encoding="utf-8") == "PRIVATE_KEY_DATA"
+    assert not (apps_dir / "post-upgrade-junk").exists()
+
+    # Excluded heavy directories (including paths with spaces) are preserved untouched in place
+    assert ollama_model.read_bytes() == b"fake-gguf-weights-payload"
+    assert plex_thumb.read_bytes() == b"regenerable-thumbnail-bif"
+    assert plex_cache.read_bytes() == b"regenerable-cache"
+    assert plex_logs.read_text(encoding="utf-8") == "plex log line"
+
+
+def test_backup_include_heavy_archives_models_and_media(tmp_path: Path) -> None:
+    repo_dir, bootstrap_dir, _storage_dir, backup_parent = _seed_legacy_repo_clone(tmp_path)
+    apps_dir = repo_dir / "apps"
+
+    ollama_model = apps_dir / "ollama" / "models" / "blobs" / "sha256-fake-model"
+    ollama_model.parent.mkdir(parents=True, exist_ok=True)
+    ollama_model.write_bytes(b"fake-gguf-weights-payload")
+
+    plex_thumb = (
+        apps_dir
+        / "plex"
+        / "config"
+        / "Library"
+        / "Application Support"
+        / "Plex Media Server"
+        / "Media"
+        / "thumb.bif"
+    )
+    plex_thumb.parent.mkdir(parents=True, exist_ok=True)
+    plex_thumb.write_bytes(b"regenerable-thumbnail-bif")
+
+    snap_dir = backup_parent / "heavy-snap"
+    res = _run(
+        [
+            "bash",
+            str(bootstrap_dir / "backup.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--backup-dir",
+            str(snap_dir),
+            "--include-heavy",
+            "--skip-docker",
+        ]
+    )
+    assert "Backup verified successfully." in res.stdout
+
+    meta = _parse_kv_file(snap_dir / "metadata.env")
+    assert meta["APPS_EXCLUDED_PATHS"] == "./home-server-dashboard"
+    listing = _list_tar_entries(snap_dir / meta["APPS_ARCHIVE"])
+    assert "home-server-dashboard" not in listing
+    assert "ollama/models/blobs/sha256-fake-model" in listing
+    assert "Plex Media Server/Media/thumb.bif" in listing
+
+
+def test_backup_and_rollback_no_compress_plain_tar(tmp_path: Path) -> None:
+    repo_dir, bootstrap_dir, storage_dir, backup_parent = _seed_legacy_repo_clone(tmp_path)
+    pre_prefs = (repo_dir / "apps" / "plex" / "config" / "Preferences.xml").read_bytes()
+    pre_maint = (storage_dir / "maintainerr" / "data" / "maintainerr.sqlite").read_bytes()
+
+    snap_dir = backup_parent / "plain-tar-snap"
+    res = _run(
+        [
+            "bash",
+            str(bootstrap_dir / "backup.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--backup-dir",
+            str(snap_dir),
+            "--no-compress",
+            "--skip-docker",
+        ]
+    )
+    assert "Backup verified successfully." in res.stdout
+
+    meta = _parse_kv_file(snap_dir / "metadata.env")
+    assert meta["ARCHIVE_COMPRESSION"] == "none"
+    assert meta["APPS_ARCHIVE"] == "apps.tar"
+    assert meta["MAINTAINERR_ARCHIVE"] == "maintainerr-data.tar"
+    assert (snap_dir / "apps.tar").is_file()
+    assert (snap_dir / "maintainerr-data.tar").is_file()
+    _run(["sha256sum", "-c", "SHA256SUMS"], cwd=snap_dir)
+
+    (repo_dir / "apps" / "plex" / "config" / "Preferences.xml").write_text("CORRUPTED", encoding="utf-8")
+    (storage_dir / "maintainerr" / "data" / "maintainerr.sqlite").write_text("CORRUPTED", encoding="utf-8")
+
+    rb = _run(
+        [
+            "bash",
+            str(bootstrap_dir / "rollback.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--backup",
+            str(snap_dir),
+            "--skip-docker",
+            "--yes",
+        ]
+    )
+    assert "Rollback completed successfully" in rb.stdout
+    assert (repo_dir / "apps" / "plex" / "config" / "Preferences.xml").read_bytes() == pre_prefs
+    assert (storage_dir / "maintainerr" / "data" / "maintainerr.sqlite").read_bytes() == pre_maint
+
+
+def test_rollback_backwards_compatible_with_v1_5_0_metadata_without_excluded_paths(tmp_path: Path) -> None:
+    repo_dir, bootstrap_dir, _storage_dir, backup_parent = _seed_legacy_repo_clone(tmp_path)
+    apps_dir = repo_dir / "apps"
+    pre_prefs = (apps_dir / "plex" / "config" / "Preferences.xml").read_bytes()
+
+    # Craft a v1.5.0-style backup directory without APPS_EXCLUDED_PATHS or ARCHIVE_COMPRESSION
+    legacy_snap = backup_parent / "v150-snap"
+    legacy_snap.mkdir(parents=True)
+    shutil.copy2(repo_dir / ".env", legacy_snap / ".env")
+    (legacy_snap / ".env").chmod(0o600)
+    env_sha = hashlib.sha256((legacy_snap / ".env").read_bytes()).hexdigest()
+
+    _run(
+        [
+            "tar",
+            "--numeric-owner",
+            "--anchored",
+            "--exclude=./home-server-dashboard",
+            "-C",
+            str(apps_dir),
+            "-czpf",
+            str(legacy_snap / "apps.tar.gz"),
+            ".",
+        ]
+    )
+    (legacy_snap / "metadata.env").write_text(
+        "\n".join(
+            [
+                "BACKUP_VERSION=1",
+                "CREATED_AT_UTC=20261124T000000Z",
+                f"REPO_DIR={repo_dir}",
+                f"GIT_COMMIT={LEGACY_COMMIT}",
+                "GIT_BRANCH=main",
+                "GIT_TAG=",
+                f"APPS_MOUNT={apps_dir}",
+                "STORAGE_MOUNT=",
+                "MAINTAINERR_FOLDER=maintainerr",
+                "HAD_BETA_RUNNING=false",
+                f"ENV_SHA256={env_sha}",
+                "APPS_ARCHIVE=apps.tar.gz",
+                "MAINTAINERR_ARCHIVE=",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    checksum_lines = []
+    for fname in (".env", "metadata.env", "apps.tar.gz"):
+        digest = hashlib.sha256((legacy_snap / fname).read_bytes()).hexdigest()
+        checksum_lines.append(f"{digest}  {fname}")
+    (legacy_snap / "SHA256SUMS").write_text("\n".join(checksum_lines) + "\n", encoding="utf-8")
+
+    # Mutate Preferences.xml while ensuring git-tracked home-server-dashboard stays intact
+    (apps_dir / "plex" / "config" / "Preferences.xml").write_text("CORRUPTED", encoding="utf-8")
+    dashboard_index = apps_dir / "home-server-dashboard" / "html" / "index.html"
+    assert dashboard_index.is_file()
+
+    rb = _run(
+        [
+            "bash",
+            str(bootstrap_dir / "rollback.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--backup",
+            str(legacy_snap),
+            "--skip-docker",
+            "--yes",
+        ]
+    )
+    assert "Rollback completed successfully" in rb.stdout
+    assert (apps_dir / "plex" / "config" / "Preferences.xml").read_bytes() == pre_prefs
+    assert dashboard_index.is_file()
+
+
+def test_upgrade_tolerates_transient_unhealthy_and_fails_fast_on_crashed_container(tmp_path: Path) -> None:
+    repo_dir, bootstrap_dir, _storage_dir, backup_parent = _seed_legacy_repo_clone(tmp_path)
+    fake_bin = tmp_path / "mock-docker-bin"
+    fake_bin.mkdir()
+
+    # 1. Transient unhealthy on first inspect poll, then healthy on subsequent polls -> upgrade succeeds
+    inspect_count_file = tmp_path / "inspect-count.txt"
+    inspect_count_file.write_text("0", encoding="utf-8")
+    docker_log = tmp_path / "docker-calls.log"
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{docker_log}"
+if [[ "$1" == "compose" ]]; then
+  shift
+  case "$1" in
+    config)
+      if [[ "$*" == *"--services"* ]]; then
+        printf 'plex\\n'
+      fi
+      exit 0
+      ;;
+    ps)
+      if [[ "$*" == *"-q"* ]]; then
+        printf 'deadbeef1234567890\\n'
+      fi
+      exit 0
+      ;;
+    pull|up|down)
+      exit 0
+      ;;
+  esac
+elif [[ "$1" == "inspect" ]]; then
+  fmt="$3"
+  if [[ "$fmt" == *"State.Status"* ]]; then
+    printf 'running\\n'
+    exit 0
+  elif [[ "$fmt" == *"State.Health"* ]]; then
+    count="$(cat "{inspect_count_file}")"
+    count=$((count + 1))
+    printf '%s' "$count" > "{inspect_count_file}"
+    if [[ "$count" -le 1 ]]; then
+      printf 'unhealthy\\n'
+    else
+      printf 'healthy\\n'
+    fi
+    exit 0
+  elif [[ "$fmt" == *"State.Running"* ]]; then
+    printf 'false\\n'
+    exit 0
+  fi
+elif [[ "$1" == "logs" ]]; then
+  printf 'mock container log line\\n'
+  exit 0
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+
+    # Also provide a no-op sudo shim in PATH in case fix-permissions needs it
+    res_recover = _run(
+        [
+            "bash",
+            str(bootstrap_dir / "upgrade.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--target",
+            "target-release",
+            "--skip-fetch",
+            "--timeout",
+            "20",
+        ],
+        env={
+            "HOMELAB_BACKUP_DIR": str(backup_parent),
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        },
+    )
+    assert "Upgrade complete!" in res_recover.stdout
+    assert "plex(running/unhealthy)" in res_recover.stdout
+    assert "All 1 service(s) are running and healthy." in res_recover.stdout
+    calls = docker_log.read_text(encoding="utf-8").splitlines()
+    assert any(line == "compose pull" for line in calls)
+    assert any(line == "compose up -d --build --remove-orphans" for line in calls)
+
+    # 2. Reset repo to LEGACY_COMMIT and verify exited container still fails fast + triggers rollback
+    pre_env_bytes = (repo_dir / ".env").read_bytes()
+    _run(["git", "-C", str(repo_dir), "checkout", "HEAD", "--", ".env"])
+    _run(["git", "-C", str(repo_dir), "checkout", "-B", "main", LEGACY_COMMIT])
+    (repo_dir / ".env").write_bytes(pre_env_bytes)
+    (repo_dir / ".env").chmod(0o600)
+    fake_docker.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "compose" ]]; then
+  shift
+  case "$1" in
+    config)
+      if [[ "$*" == *"--services"* ]]; then
+        printf 'plex\\n'
+      fi
+      exit 0
+      ;;
+    ps)
+      if [[ "$*" == *"-q"* ]]; then
+        printf 'deadbeef1234567890\\n'
+      fi
+      exit 0
+      ;;
+    pull|up|down)
+      exit 0
+      ;;
+  esac
+elif [[ "$1" == "inspect" ]]; then
+  fmt="$3"
+  if [[ "$fmt" == *"State.Status"* ]]; then
+    printf 'exited\\n'
+    exit 0
+  elif [[ "$fmt" == *"State.Health"* ]]; then
+    printf 'unhealthy\\n'
+    exit 0
+  fi
+elif [[ "$1" == "logs" ]]; then
+  printf 'fatal crash in plex\\n'
+  exit 0
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+
+    t0 = time.monotonic()
+    res_crash = _run(
+        [
+            "bash",
+            str(bootstrap_dir / "upgrade.sh"),
+            "--repo-dir",
+            str(repo_dir),
+            "--target",
+            "target-release",
+            "--skip-fetch",
+            "--timeout",
+            "30",
+        ],
+        env={
+            "HOMELAB_BACKUP_DIR": str(backup_parent),
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        },
+        check=False,
+    )
+    elapsed = time.monotonic() - t0
+    assert res_crash.returncode != 0
+    assert elapsed < 15
+    assert "entered failure state (status=exited" in res_crash.stderr
+    assert "fatal crash in plex" in res_crash.stderr
+    assert "Automatic rollback succeeded" in res_crash.stderr
+    assert _run(["git", "-C", str(repo_dir), "rev-parse", "HEAD"]).stdout.strip() == LEGACY_COMMIT

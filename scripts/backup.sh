@@ -13,22 +13,26 @@ usage() {
   cat <<'EOF'
 Usage: backup.sh [options]
 
-Create a verified HomeLab backup (.env, metadata.env, apps.tar.gz, optional
-maintainerr-data.tar.gz, and SHA256SUMS).
+Create a verified HomeLab backup (.env, metadata.env, apps archive, optional
+maintainerr-data archive, and SHA256SUMS).
 
 Options:
   --backup-dir <dir>   Destination backup directory (must not be inside repo or apps mount)
   --repo-dir <dir>     Path to HomeLab git repository (default: auto-detected)
+  --include-heavy      Include heavy regenerable paths (Ollama models, Plex Cache/Media/Logs)
+  --no-compress        Write uncompressed .tar archives (zero compression CPU overhead)
   --online             Skip stopping/restarting Docker containers during backup
   --no-restart         Stop containers for backup, do not restart them afterward
   --skip-docker        Do not invoke Docker Compose at all (implies --online)
-  --dry-run            Show planned backup actions and disk checks without modifying files
+  --dry-run            Show planned backup actions, exclusions, and disk checks without modifying files
   -h, --help           Show this help message
 EOF
 }
 
 CUSTOM_BACKUP_DIR=""
 CUSTOM_REPO_DIR=""
+INCLUDE_HEAVY=false
+NO_COMPRESS=false
 ONLINE=false
 NO_RESTART=false
 SKIP_DOCKER=false
@@ -45,6 +49,14 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { echo "Error: --repo-dir requires an argument" >&2; exit 1; }
       CUSTOM_REPO_DIR="$2"
       shift 2
+      ;;
+    --include-heavy)
+      INCLUDE_HEAVY=true
+      shift
+      ;;
+    --no-compress)
+      NO_COMPRESS=true
+      shift
       ;;
     --online)
       ONLINE=true
@@ -176,6 +188,14 @@ resolve_mount_path() {
 RAW_APPS_MOUNT="$(read_env_var "${ENV_FILE}" "DEFAULT_APPS_MOUNT" "./apps")"
 RAW_STORAGE_MOUNT="$(read_env_var "${ENV_FILE}" "DEFAULT_STORAGE_MOUNT" "")"
 MAINTAINERR_FOLDER="$(read_env_var "${ENV_FILE}" "MAINTAINERR_FOLDER" "maintainerr")"
+OLLAMA_FOLDER="$(read_env_var "${ENV_FILE}" "OLLAMA_FOLDER" "ollama")"
+PLEX_FOLDER="$(read_env_var "${ENV_FILE}" "PLEX_FOLDER" "plex")"
+[[ -z "${OLLAMA_FOLDER}" || "${OLLAMA_FOLDER}" == CHANGE_TO_* ]] && OLLAMA_FOLDER="ollama"
+[[ -z "${PLEX_FOLDER}" || "${PLEX_FOLDER}" == CHANGE_TO_* ]] && PLEX_FOLDER="plex"
+OLLAMA_FOLDER="${OLLAMA_FOLDER#./}"
+OLLAMA_FOLDER="${OLLAMA_FOLDER%/}"
+PLEX_FOLDER="${PLEX_FOLDER#./}"
+PLEX_FOLDER="${PLEX_FOLDER%/}"
 
 APPS_MOUNT="$(resolve_mount_path "${RAW_APPS_MOUNT}")"
 STORAGE_MOUNT=""
@@ -255,6 +275,62 @@ if [[ ! -d "${APPS_MOUNT}" ]]; then
   exit 1
 fi
 
+APPS_EXCLUDED_PATHS_LIST=("./home-server-dashboard")
+if [[ "${INCLUDE_HEAVY}" != true ]]; then
+  APPS_EXCLUDED_PATHS_LIST+=(
+    "./${OLLAMA_FOLDER}/models"
+    "./${PLEX_FOLDER}/config/Library/Application Support/Plex Media Server/Cache"
+    "./${PLEX_FOLDER}/config/Library/Application Support/Plex Media Server/Media"
+    "./${PLEX_FOLDER}/config/Library/Application Support/Plex Media Server/Crash Reports"
+    "./${PLEX_FOLDER}/config/Library/Application Support/Plex Media Server/Diagnostics"
+    "./${PLEX_FOLDER}/config/Library/Application Support/Plex Media Server/Logs"
+    "./${PLEX_FOLDER}/config/Library/Application Support/Plex Media Server/Updates"
+  )
+fi
+
+APPS_EXCLUDED_PATHS=""
+for rel in "${APPS_EXCLUDED_PATHS_LIST[@]}"; do
+  if [[ -z "${APPS_EXCLUDED_PATHS}" ]]; then
+    APPS_EXCLUDED_PATHS="${rel}"
+  else
+    APPS_EXCLUDED_PATHS="${APPS_EXCLUDED_PATHS}|${rel}"
+  fi
+done
+
+APPS_TAR_EXCLUDE_ARGS=()
+APPS_DU_EXCLUDE_ARGS=()
+for rel in "${APPS_EXCLUDED_PATHS_LIST[@]}"; do
+  APPS_TAR_EXCLUDE_ARGS+=("--exclude=${rel}")
+  APPS_DU_EXCLUDE_ARGS+=("--exclude=${rel}")
+done
+
+# Compression auto-selection
+ARCHIVE_COMPRESSION=""
+COMPRESS_LABEL=""
+ARCHIVE_EXT=""
+TAR_COMPRESS_ARGS=()
+
+if [[ "${NO_COMPRESS}" == true ]]; then
+  ARCHIVE_COMPRESSION="none"
+  COMPRESS_LABEL="none"
+  ARCHIVE_EXT=".tar"
+elif command -v zstd >/dev/null 2>&1; then
+  ARCHIVE_COMPRESSION="zstd"
+  COMPRESS_LABEL="zstd"
+  ARCHIVE_EXT=".tar.zst"
+  TAR_COMPRESS_ARGS=(-I "zstd -T0 -3")
+elif command -v pigz >/dev/null 2>&1; then
+  ARCHIVE_COMPRESSION="gzip"
+  COMPRESS_LABEL="pigz"
+  ARCHIVE_EXT=".tar.gz"
+  TAR_COMPRESS_ARGS=(-I "pigz -1")
+else
+  ARCHIVE_COMPRESSION="gzip"
+  COMPRESS_LABEL="gzip -1"
+  ARCHIVE_EXT=".tar.gz"
+  TAR_COMPRESS_ARGS=(-I "gzip -1")
+fi
+
 run_as_root() {
   if [[ "$(id -u)" -eq 0 ]]; then
     "$@"
@@ -267,23 +343,117 @@ run_as_root() {
   fi
 }
 
-dir_size_kb() {
-  local dir="$1"
-  local output=""
-  if output="$(du -sk "${dir}" 2>/dev/null)"; then
-    printf '%s\n' "${output%%[[:space:]]*}"
-  else
-    output="$(run_as_root du -sk "${dir}")"
-    printf '%s\n' "${output%%[[:space:]]*}"
+# Detect unreadable files/directories upfront (pruning excluded heavy paths so
+# this completes in milliseconds) so we can pre-authenticate sudo once and run
+# du/tar in a single pass instead of retrying after a wasted gzip pass.
+path_needs_root() {
+  local base_dir="$1"
+  shift
+  local -a excludes=("$@")
+  local find_output=""
+  local rc=0
+
+  if [[ "$(id -u)" -eq 0 ]]; then
+    return 1
   fi
+
+  local -a find_expr=()
+  if [[ "${#excludes[@]}" -gt 0 ]]; then
+    find_expr+=("(")
+    local first=true
+    local ex
+    for ex in "${excludes[@]}"; do
+      if [[ "${first}" == true ]]; then
+        first=false
+      else
+        find_expr+=("-o")
+      fi
+      find_expr+=("-path" "${ex}")
+    done
+    find_expr+=(")" "-prune" "-o")
+  fi
+  find_expr+=("!" "-readable" "-print" "-quit")
+
+  find_output="$(
+    cd "${base_dir}"
+    find . "${find_expr[@]}" 2>&1
+  )" || rc=$?
+
+  if [[ -n "${find_output}" || "${rc}" -ne 0 ]]; then
+    return 0
+  fi
+  return 1
 }
 
-# Check available disk space before touching Docker or creating files.
+APPS_NEEDS_ROOT=false
+MAINTAINERR_NEEDS_ROOT=false
+NEEDS_ROOT=false
+
+if path_needs_root "${APPS_MOUNT}" "${APPS_EXCLUDED_PATHS_LIST[@]}"; then
+  APPS_NEEDS_ROOT=true
+  NEEDS_ROOT=true
+fi
+if [[ -n "${MAINTAINERR_DATA_DIR}" && -d "${MAINTAINERR_DATA_DIR}" ]]; then
+  if path_needs_root "${MAINTAINERR_DATA_DIR}"; then
+    MAINTAINERR_NEEDS_ROOT=true
+    NEEDS_ROOT=true
+  fi
+fi
+
+if [[ "${NEEDS_ROOT}" == true && "${DRY_RUN}" != true ]]; then
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "Error: root-owned or mode-restricted files detected in source data, and 'sudo' is not installed." >&2
+    exit 1
+  fi
+  if [[ -t 0 ]]; then
+    echo "==> Root privileges required for restricted service directories; verifying sudo credentials..."
+    sudo -v
+  fi
+fi
+
+dir_size_kb() {
+  local dir="$1"
+  local use_root="$2"
+  shift 2
+  local -a exclude_args=("$@")
+  local output=""
+
+  if [[ "${use_root}" == true ]]; then
+    output="$(
+      cd "${dir}"
+      run_as_root du -sk "${exclude_args[@]}" .
+    )"
+  else
+    if ! output="$(
+      cd "${dir}"
+      du -sk "${exclude_args[@]}" . 2>/dev/null
+    )"; then
+      output="$(
+        cd "${dir}"
+        run_as_root du -sk "${exclude_args[@]}" .
+      )"
+    fi
+  fi
+  printf '%s\n' "${output%%[[:space:]]*}"
+}
+
+format_size_kb() {
+  local kb="$1"
+  awk -v k="${kb}" 'BEGIN {
+    if (k >= 1048576) {
+      printf "%.2f GiB", k / 1048576
+    } else {
+      printf "%.1f MiB", k / 1024
+    }
+  }'
+}
+
+# Check available disk space before touching Docker or creating files (single pass).
 ESTIMATED_KB=1024
-apps_kb="$(dir_size_kb "${APPS_MOUNT}")"
+apps_kb="$(dir_size_kb "${APPS_MOUNT}" "${APPS_NEEDS_ROOT}" "${APPS_DU_EXCLUDE_ARGS[@]}")"
 ESTIMATED_KB=$((ESTIMATED_KB + apps_kb))
 if [[ -n "${MAINTAINERR_DATA_DIR}" && -d "${MAINTAINERR_DATA_DIR}" ]]; then
-  maint_kb="$(dir_size_kb "${MAINTAINERR_DATA_DIR}")"
+  maint_kb="$(dir_size_kb "${MAINTAINERR_DATA_DIR}" "${MAINTAINERR_NEEDS_ROOT}")"
   ESTIMATED_KB=$((ESTIMATED_KB + maint_kb))
 fi
 REQUIRED_KB=$(( (ESTIMATED_KB * 120 + 99) / 100 ))
@@ -298,7 +468,7 @@ if [[ -z "${AVAIL_KB}" || ! "${AVAIL_KB}" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 if (( AVAIL_KB < REQUIRED_KB )); then
-  echo "Error: insufficient disk space in ${PROBE_DIR}: available ${AVAIL_KB} KiB, required ${REQUIRED_KB} KiB (source ${ESTIMATED_KB} KiB + 20% headroom)." >&2
+  echo "Error: insufficient disk space in ${PROBE_DIR}: available ${AVAIL_KB} KiB ($(format_size_kb "${AVAIL_KB}")), required ${REQUIRED_KB} KiB ($(format_size_kb "${REQUIRED_KB}"))." >&2
   exit 1
 fi
 
@@ -309,7 +479,30 @@ if [[ "${DRY_RUN}" == true ]]; then
     echo "[dry-run] Maintainerr data: ${MAINTAINERR_DATA_DIR}"
   fi
   echo "[dry-run] Backup directory: ${BACKUP_DIR}"
-  echo "[dry-run] Disk check OK:    ${AVAIL_KB} KiB available >= ${REQUIRED_KB} KiB required"
+  echo "[dry-run] Compression:      ${COMPRESS_LABEL} (archive: apps${ARCHIVE_EXT})"
+  echo "[dry-run] Needs sudo:       ${NEEDS_ROOT}"
+  echo "[dry-run] Estimated size:   $(format_size_kb "${ESTIMATED_KB}") (${ESTIMATED_KB} KiB; required with 20% headroom: $(format_size_kb "${REQUIRED_KB}"))"
+  echo "[dry-run] Available space:  $(format_size_kb "${AVAIL_KB}") (${AVAIL_KB} KiB on ${PROBE_DIR})"
+  if [[ "${INCLUDE_HEAVY}" == true ]]; then
+    echo "[dry-run] Exclusions:       ./home-server-dashboard only (--include-heavy enabled)"
+  else
+    echo "[dry-run] Exclusions (preserved untouched on rollback; pass --include-heavy to archive):"
+    for rel in "${APPS_EXCLUDED_PATHS_LIST[@]}"; do
+      rel_clean="${rel#./}"
+      ex_path="${APPS_MOUNT}/${rel_clean}"
+      if [[ -e "${ex_path}" ]]; then
+        ex_kb=""
+        if ex_kb_line="$(du -sk "${ex_path}" 2>/dev/null)"; then
+          ex_kb="${ex_kb_line%%[[:space:]]*}"
+          echo "[dry-run]   - ${rel} ($(format_size_kb "${ex_kb}"))"
+        else
+          echo "[dry-run]   - ${rel} (present; size requires root)"
+        fi
+      else
+        echo "[dry-run]   - ${rel} (not present)"
+      fi
+    done
+  fi
   if [[ "${SKIP_DOCKER}" == true ]]; then
     echo "[dry-run] Docker:           skipped (--skip-docker)"
   elif [[ "${ONLINE}" == true ]]; then
@@ -326,6 +519,7 @@ HAD_BETA_RUNNING=false
 STACK_WAS_STOPPED=false
 BACKUP_CREATED_BY_US=false
 BACKUP_COMPLETED=false
+ACTIVE_HB_PID=""
 
 compose_cmd() {
   (
@@ -363,6 +557,11 @@ cleanup() {
   trap - EXIT
   trap '' INT TERM HUP
   set +e
+  if [[ -n "${ACTIVE_HB_PID}" ]]; then
+    kill "${ACTIVE_HB_PID}" 2>/dev/null || true
+    wait "${ACTIVE_HB_PID}" 2>/dev/null || true
+    ACTIVE_HB_PID=""
+  fi
   if [[ "${BACKUP_COMPLETED}" != true && "${BACKUP_CREATED_BY_US}" == true && -d "${BACKUP_DIR}" ]]; then
     rm -rf "${BACKUP_DIR}" 2>/dev/null || true
   fi
@@ -379,6 +578,63 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+run_with_heartbeat() {
+  local label="$1"
+  local watch_file="$2"
+  shift 2
+
+  "$@" &
+  local cmd_pid=$!
+
+  (
+    local start_ts=${SECONDS}
+    local next_report=5
+    while kill -0 "${cmd_pid}" 2>/dev/null; do
+      sleep 1
+      if ! kill -0 "${cmd_pid}" 2>/dev/null; then
+        break
+      fi
+      local elapsed=$((SECONDS - start_ts))
+      if (( elapsed >= next_report )); then
+        local bytes=0
+        if [[ -n "${watch_file}" && -f "${watch_file}" ]]; then
+          bytes="$(stat -c '%s' "${watch_file}" 2>/dev/null || echo 0)"
+        fi
+        local mib=$(( (bytes + 524288) / 1048576 ))
+        printf '    ... archiving %s: %s MiB written (%ss elapsed)\n' "${label}" "${mib}" "${elapsed}"
+        next_report=$((next_report + 5))
+      fi
+    done
+  ) &
+  ACTIVE_HB_PID=$!
+
+  local rc=0
+  wait "${cmd_pid}" || rc=$?
+  kill "${ACTIVE_HB_PID}" 2>/dev/null || true
+  wait "${ACTIVE_HB_PID}" 2>/dev/null || true
+  ACTIVE_HB_PID=""
+  return "${rc}"
+}
+
+verify_archive_stream() {
+  local archive_path="$1"
+  case "${ARCHIVE_COMPRESSION}" in
+    zstd)
+      zstd -t -q "${archive_path}"
+      ;;
+    gzip)
+      gzip -t "${archive_path}"
+      ;;
+    none)
+      tar -tf "${archive_path}" >/dev/null
+      ;;
+    *)
+      echo "Error: unsupported ARCHIVE_COMPRESSION '${ARCHIVE_COMPRESSION}'" >&2
+      return 1
+      ;;
+  esac
+}
+
 if [[ "${SKIP_DOCKER}" != true ]]; then
   if ! command -v docker >/dev/null 2>&1; then
     echo "Error: docker is required (or pass --skip-docker)" >&2
@@ -388,7 +644,7 @@ if [[ "${SKIP_DOCKER}" != true ]]; then
   if [[ "${ONLINE}" != true ]]; then
     echo "==> Stopping HomeLab stack for crash-consistent backup..."
     STACK_WAS_STOPPED=true
-    compose_cmd --profile '*' down
+    compose_cmd --profile '*' down || compose_cmd down
   fi
 fi
 
@@ -408,28 +664,41 @@ if [[ "${SRC_ENV_SHA}" != "${DST_ENV_SHA}" ]]; then
   exit 1
 fi
 
-APPS_ARCHIVE="apps.tar.gz"
-echo "==> Archiving ${APPS_MOUNT} (excluding home-server-dashboard)..."
+APPS_ARCHIVE="apps${ARCHIVE_EXT}"
+if [[ "${INCLUDE_HEAVY}" == true ]]; then
+  echo "==> Archiving ${APPS_MOUNT} (${COMPRESS_LABEL}; excluding home-server-dashboard, including heavy paths)..."
+else
+  echo "==> Archiving ${APPS_MOUNT} (${COMPRESS_LABEL}; excluding home-server-dashboard + regenerable models/caches)..."
+fi
 apps_archive_path="${BACKUP_DIR}/${APPS_ARCHIVE}"
-if ! tar --numeric-owner --anchored --exclude='./home-server-dashboard' -C "${APPS_MOUNT}" -czpf "${apps_archive_path}" . 2>/dev/null; then
-  echo "    Retrying archive with root privileges for root-owned/mode-restricted files..."
-  run_as_root tar --numeric-owner --anchored --exclude='./home-server-dashboard' -C "${APPS_MOUNT}" -czpf "${apps_archive_path}" .
+if [[ "${APPS_NEEDS_ROOT}" == true ]]; then
+  run_with_heartbeat "${APPS_ARCHIVE}" "${apps_archive_path}" \
+    run_as_root tar --numeric-owner --anchored "${APPS_TAR_EXCLUDE_ARGS[@]}" "${TAR_COMPRESS_ARGS[@]}" -C "${APPS_MOUNT}" -cpf "${apps_archive_path}" .
   run_as_root chown "$(id -u):$(id -g)" "${apps_archive_path}"
+else
+  run_with_heartbeat "${APPS_ARCHIVE}" "${apps_archive_path}" \
+    tar --numeric-owner --anchored "${APPS_TAR_EXCLUDE_ARGS[@]}" "${TAR_COMPRESS_ARGS[@]}" -C "${APPS_MOUNT}" -cpf "${apps_archive_path}" .
 fi
 chmod 600 "${apps_archive_path}"
-tar -tzf "${apps_archive_path}" >/dev/null
+echo "==> Verifying ${APPS_ARCHIVE} integrity..."
+verify_archive_stream "${apps_archive_path}"
 
 MAINTAINERR_ARCHIVE=""
 if [[ -n "${MAINTAINERR_DATA_DIR}" && -d "${MAINTAINERR_DATA_DIR}" ]]; then
-  echo "==> Archiving Maintainerr data (${MAINTAINERR_DATA_DIR})..."
-  MAINTAINERR_ARCHIVE="maintainerr-data.tar.gz"
+  echo "==> Archiving Maintainerr data (${MAINTAINERR_DATA_DIR}, ${COMPRESS_LABEL})..."
+  MAINTAINERR_ARCHIVE="maintainerr-data${ARCHIVE_EXT}"
   maint_archive_path="${BACKUP_DIR}/${MAINTAINERR_ARCHIVE}"
-  if ! tar --numeric-owner -C "${MAINTAINERR_DATA_DIR}" -czpf "${maint_archive_path}" . 2>/dev/null; then
-    run_as_root tar --numeric-owner -C "${MAINTAINERR_DATA_DIR}" -czpf "${maint_archive_path}" .
+  if [[ "${MAINTAINERR_NEEDS_ROOT}" == true ]]; then
+    run_with_heartbeat "${MAINTAINERR_ARCHIVE}" "${maint_archive_path}" \
+      run_as_root tar --numeric-owner "${TAR_COMPRESS_ARGS[@]}" -C "${MAINTAINERR_DATA_DIR}" -cpf "${maint_archive_path}" .
     run_as_root chown "$(id -u):$(id -g)" "${maint_archive_path}"
+  else
+    run_with_heartbeat "${MAINTAINERR_ARCHIVE}" "${maint_archive_path}" \
+      tar --numeric-owner "${TAR_COMPRESS_ARGS[@]}" -C "${MAINTAINERR_DATA_DIR}" -cpf "${maint_archive_path}" .
   fi
   chmod 600 "${maint_archive_path}"
-  tar -tzf "${maint_archive_path}" >/dev/null
+  echo "==> Verifying ${MAINTAINERR_ARCHIVE} integrity..."
+  verify_archive_stream "${maint_archive_path}"
 fi
 
 cat > "${BACKUP_DIR}/metadata.env" <<EOF
@@ -446,10 +715,12 @@ HAD_BETA_RUNNING=${HAD_BETA_RUNNING}
 ENV_SHA256=${SRC_ENV_SHA}
 APPS_ARCHIVE=${APPS_ARCHIVE}
 MAINTAINERR_ARCHIVE=${MAINTAINERR_ARCHIVE}
+ARCHIVE_COMPRESSION=${ARCHIVE_COMPRESSION}
+APPS_EXCLUDED_PATHS=${APPS_EXCLUDED_PATHS}
 EOF
 chmod 600 "${BACKUP_DIR}/metadata.env"
 
-echo "==> Generating and verifying SHA256SUMS..."
+echo "==> Computing SHA256SUMS..."
 CHECKSUM_FILES=(".env" "metadata.env" "${APPS_ARCHIVE}")
 if [[ -n "${MAINTAINERR_ARCHIVE}" ]]; then
   CHECKSUM_FILES+=("${MAINTAINERR_ARCHIVE}")
@@ -458,7 +729,8 @@ fi
   cd "${BACKUP_DIR}"
   sha256sum "${CHECKSUM_FILES[@]}" > SHA256SUMS
   chmod 600 SHA256SUMS
-  sha256sum -c SHA256SUMS >/dev/null
+  # Verify small metadata/env entries against SHA256SUMS without re-reading multi-GB archives.
+  grep -E '  (\.env|metadata\.env)$' SHA256SUMS | sha256sum -c - >/dev/null
 )
 
 BACKUP_COMPLETED=true
