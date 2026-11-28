@@ -112,7 +112,7 @@ Backups are stored by default outside the repository at `${HOMELAB_BACKUP_DIR:-$
 | `metadata.env` | Yes (`0600`) | Records `GIT_COMMIT`, `GIT_BRANCH`, `GIT_TAG`, mount paths, `HAD_BETA_RUNNING`, `ENV_SHA256`, `ARCHIVE_COMPRESSION`, and `APPS_EXCLUDED_PATHS`. |
 | `${DEFAULT_APPS_MOUNT}` | Yes (`apps.tar.zst` / `apps.tar.gz` / `apps.tar`) | Archived with `tar --numeric-owner` in a single pass so non-root UIDs/GIDs (CouchDB, Seerr, etc.) stay intact. |
 | `apps/home-server-dashboard` | **Excluded** (always) | Tracked in git and rebuilt from the checked-out commit on upgrade/rollback. |
-| `${OLLAMA_FOLDER}/models` & Plex `Cache`/`Media`/`Crash Reports`/`Diagnostics`/`Logs`/`Updates` | **Excluded by default** (pass `--include-heavy` to archive) | Multi-GB already-compressed weights and regenerable thumbnails/logs/caches. Recorded in `APPS_EXCLUDED_PATHS` and **preserved untouched in place** on rollback via O(1) rename; Plex `Preferences.xml` and `Plug-in Support/Databases` plus Ollama keys (`id_ed25519`) are always backed up. |
+| `${OLLAMA_FOLDER}/models`, `${VLLM_FOLDER}/huggingface`, `${VLLM_FOLDER}/vllm`, & Plex `Cache`/`Media`/`Crash Reports`/`Diagnostics`/`Logs`/`Updates` | **Excluded by default** (pass `--include-heavy` to archive) | Multi-GB already-compressed weights and regenerable thumbnails/logs/caches. Recorded in `APPS_EXCLUDED_PATHS` and **preserved untouched in place** on rollback via O(1) rename; Plex `Preferences.xml` and `Plug-in Support/Databases` plus Ollama keys (`id_ed25519`) are always backed up. |
 | `${DEFAULT_STORAGE_MOUNT}/${MAINTAINERR_FOLDER}/data` | Yes (`maintainerr-data.tar.*`) | Backed up automatically whenever `DEFAULT_STORAGE_MOUNT` is configured and the directory exists. |
 | Large media libraries (`movies`, `tv`, `downloads`) | **Excluded** | Only application configs/databases in `apps` and Maintainerr data are archived; media files on `DEFAULT_STORAGE_MOUNT` are untouched. |
 | `SHA256SUMS` | Yes (`0600`) | Generated once during backup (verifying `.env` and `metadata.env` locally without re-reading multi-GB archives) and fully verified via `sha256sum -c SHA256SUMS` before every rollback. |
@@ -136,7 +136,7 @@ When upgrading across releases, `upgrade.sh` merges your backed-up `.env` into t
    - `JELLYSEERR_PORT` → `SEERR_PORT`
    (Applied only when the old key has a real non-placeholder value and the target key is absent or still a `CHANGE_TO_*` placeholder.)
 5. **Legacy & custom keys preserved:** Keys present in your old `.env` that were removed from the template (e.g. `MATTERMOST_*`, `THREADFIN_*`) or custom variables you added are appended under `# Preserved legacy / custom variables` so nothing is silently lost.
-6. **Placeholder safety check:** Required keys still starting with `CHANGE_TO_` fail the upgrade before restarting containers (beta `HERMES_*` placeholders are ignored unless `--beta` is passed).
+6. **Placeholder safety check:** Required keys still starting with `CHANGE_TO_` fail the upgrade before restarting containers (opt-in `HERMES_*` and `VLLM_*` placeholders are ignored unless `--beta` / `--vllm` is passed).
 
 ---
 

@@ -12,7 +12,7 @@ Key components:
 - `.env` — Environment configuration template with `CHANGE_TO_*` placeholders for secrets and host-specific values.
 - `Makefile` — Stack lifecycle (`up`, `down`, `restart`, `logs`, `pull`, `clean`, `setup`), safe ops (`backup`, `upgrade`, `rollback`), and quality checks (`lint`, `validate`, `test`, `system-test`, `qa`, `check`), plus `changelog` when release tooling is present.
 - `scripts/` — Host bootstrap, apt dependency installation, systemd service setup, and safe backup/upgrade/rollback scripts (`backup.sh`, `upgrade.sh`, `rollback.sh`, `merge-env.py`).
-- `docs/` — Operator guides including [`docs/upgrading.md`](docs/upgrading.md) and [`docs/hermes-agent.md`](docs/hermes-agent.md).
+- `docs/` — Operator guides including [`docs/upgrading.md`](docs/upgrading.md), [`docs/hermes-agent.md`](docs/hermes-agent.md), and [`docs/vllm.md`](docs/vllm.md).
 - `apps/home-server-dashboard/` — Custom Nginx static dashboard (`html/index.html`) listing web services and ports.
 - `tests/` — Automated pytest suite validating compose rendering, `.env` ↔ `README.md` parity, port uniqueness, dashboard port consistency, script safety, and upgrade/rollback workflows.
 
@@ -34,8 +34,9 @@ Key components:
 ├── docs/
 │   ├── BACKLOG.md                    # Planned roadmap items & architecture specs
 │   ├── hermes-agent.md               # Hermes Agent (beta) setup & hardening guide
-│   └── upgrading.md                  # Safe upgrade, backup, and rollback guide
-├── scripts/                          # Host setup, systemd unit, and backup/upgrade/rollback scripts
+│   ├── upgrading.md                  # Safe upgrade, backup, and rollback guide
+│   └── vllm.md                       # vLLM (opt-in GPU inference) setup & VRAM guide
+├── scripts/                          # Host setup, systemd unit, backup/upgrade/rollback, and vllm-model.sh
 ├── tests/                            # Pytest validation suite
 ├── .env                              # Environment defaults and secret placeholders
 ├── Makefile                          # Operator and CI commands

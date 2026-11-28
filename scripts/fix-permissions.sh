@@ -35,7 +35,7 @@ load_env_file() {
 
   local -A _caller_set=()
   local _var
-  for _var in DEFAULT_PUID DEFAULT_GUID DEFAULT_APPS_MOUNT DEFAULT_STORAGE_MOUNT COUCHDB_FOLDER MAINTAINERR_FOLDER SEERR_FOLDER; do
+  for _var in DEFAULT_PUID DEFAULT_GUID DEFAULT_APPS_MOUNT DEFAULT_STORAGE_MOUNT COUCHDB_FOLDER MAINTAINERR_FOLDER SEERR_FOLDER VLLM_FOLDER; do
     if [[ -n "${!_var+x}" ]]; then
       _caller_set["${_var}"]=1
     fi
@@ -59,7 +59,7 @@ load_env_file() {
 
     # Only import keys needed by this script; preserve caller overrides
     case "${key}" in
-      DEFAULT_PUID|DEFAULT_GUID|DEFAULT_APPS_MOUNT|DEFAULT_STORAGE_MOUNT|COUCHDB_FOLDER|MAINTAINERR_FOLDER|SEERR_FOLDER)
+      DEFAULT_PUID|DEFAULT_GUID|DEFAULT_APPS_MOUNT|DEFAULT_STORAGE_MOUNT|COUCHDB_FOLDER|MAINTAINERR_FOLDER|SEERR_FOLDER|VLLM_FOLDER)
         ;;
       *)
         continue
@@ -95,6 +95,7 @@ DEFAULT_STORAGE_MOUNT="${DEFAULT_STORAGE_MOUNT:-}"
 COUCHDB_FOLDER="${COUCHDB_FOLDER:-couch-db}"
 MAINTAINERR_FOLDER="${MAINTAINERR_FOLDER:-maintainerr}"
 SEERR_FOLDER="${SEERR_FOLDER:-seerr}"
+VLLM_FOLDER="${VLLM_FOLDER:-vllm}"
 
 if [[ ! "${DEFAULT_PUID}" =~ ^[0-9]+$ ]]; then
   echo "Error: DEFAULT_PUID must be a non-negative integer (got '${DEFAULT_PUID}'). Check ${ENV_FILE}." >&2
@@ -141,6 +142,7 @@ OWNERSHIP_MAP=(
   "${APPS_MOUNT}|${COUCHDB_FOLDER}/couchdb-data|${DEFAULT_PUID}|${DEFAULT_GUID}"
   "${APPS_MOUNT}|${COUCHDB_FOLDER}/couchdb-etc|${DEFAULT_PUID}|${DEFAULT_GUID}"
   "${APPS_MOUNT}|${SEERR_FOLDER}/config|1000|1000"
+  "${APPS_MOUNT}|${VLLM_FOLDER}|${DEFAULT_PUID}|0"
 )
 
 if [[ -n "${DEFAULT_STORAGE_MOUNT}" && "${DEFAULT_STORAGE_MOUNT}" != CHANGE_TO_* ]]; then

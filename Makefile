@@ -1,4 +1,4 @@
-.PHONY: help up down up-beta down-beta restart logs pull clean setup permissions backup upgrade rollback lint validate test system-test qa check changelog release-notes
+.PHONY: help up down up-beta down-beta up-vllm down-vllm vllm-model restart logs pull clean setup permissions backup upgrade rollback lint validate test system-test qa check changelog release-notes
 
 # ==========================================
 # 🛠️ COMMANDS
@@ -16,6 +16,15 @@ up-beta: permissions ## Start the stack including beta services (e.g. Hermes Age
 down-beta: ## Stop the stack including beta services
 	docker compose --profile beta down
 
+up-vllm: permissions ## Start opt-in vLLM GPU inference service
+	docker compose --profile vllm up -d vllm
+
+down-vllm: ## Stop and remove vLLM service (frees GPU VRAM)
+	docker compose --profile vllm stop vllm && docker compose --profile vllm rm -f vllm
+
+vllm-model: ## Pull & serve a Hugging Face model on vLLM (MODEL=org/repo [PARSER=...])
+	@bash scripts/vllm-model.sh --model "$(MODEL)" $(if $(PARSER),--parser "$(PARSER)")
+
 restart: down up ## Restart the stack (runs down then up)
 
 logs: ## View logs for all services (Ctrl+C to exit)
@@ -27,7 +36,7 @@ pull: ## Just pull images (useful for pre-loading updates)
 clean: ## Clean up dangling images to free space
 	docker image prune -f
 
-permissions: ## Fix ownership of app volumes (CouchDB, Maintainerr, Seerr)
+permissions: ## Fix ownership of app volumes (CouchDB, Maintainerr, Seerr, vLLM)
 	bash scripts/fix-permissions.sh
 
 setup: ## Run initial setup scripts (directories & system service)

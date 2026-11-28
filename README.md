@@ -101,6 +101,19 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     OLLAMA_FLASH_ATTENTION=1
     OLLAMA_KV_CACHE_TYPE=q8_0
 
+    # vllm Configuration (vllm profile)
+    VLLM_FOLDER=vllm
+    VLLM_BIND_IP=127.0.0.1
+    VLLM_PORT=8000
+    VLLM_MODEL=Qwen/Qwen3-8B-AWQ
+    VLLM_SERVED_MODEL_NAME=homelab-vllm
+    VLLM_GPU_MEMORY_UTILIZATION=0.45
+    VLLM_MAX_MODEL_LEN=32768
+    VLLM_MAX_NUM_SEQS=8
+    VLLM_TOOL_CALL_PARSER=hermes
+    VLLM_API_KEY=CHANGE_TO_VLLM_API_KEY
+    VLLM_HF_TOKEN=CHANGE_TO_HF_TOKEN
+
     # qdirstat Configuration
     QDirstat_FOLDER=qdirstat
     QDirstat_PORT=5800
@@ -114,7 +127,20 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
     HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=CHANGE_TO_HERMES_DASHBOARD_PASSWORD
     HERMES_DASHBOARD_BASIC_AUTH_SECRET=CHANGE_TO_HERMES_DASHBOARD_SESSION_SECRET
-    HERMES_OPENROUTER_API_KEY=CHANGE_TO_OPENROUTER_API_KEY
+    # Optional LLM Provider Credentials (leave blank for 100% local Ollama, or set in Web UI / /opt/data/.env)
+    HERMES_INFERENCE_PROVIDER=
+    HERMES_OPENROUTER_API_KEY=
+    HERMES_OPENAI_API_KEY=
+    HERMES_OPENAI_BASE_URL=
+    HERMES_ANTHROPIC_API_KEY=
+    HERMES_GEMINI_API_KEY=
+    HERMES_XAI_API_KEY=
+    HERMES_GROQ_API_KEY=
+    HERMES_DEEPSEEK_API_KEY=
+    HERMES_MISTRAL_API_KEY=
+    HERMES_NVIDIA_API_KEY=
+    HERMES_HF_TOKEN=
+    HERMES_OLLAMA_API_KEY=
     ```
 3. Run the setup script:
     ```bash
@@ -132,11 +158,14 @@ Available commands:
   down                 Stop the stack and remove containers
   up-beta              Start the stack including beta services (e.g. Hermes Agent)
   down-beta            Stop the stack including beta services
+  up-vllm              Start opt-in vLLM GPU inference service
+  down-vllm            Stop and remove vLLM service (frees GPU VRAM)
+  vllm-model           Pull & serve a Hugging Face model on vLLM (MODEL=org/repo [PARSER=...])
   restart              Restart the stack (runs down then up)
   logs                 View logs for all services (Ctrl+C to exit)
   pull                 Just pull images (useful for pre-loading updates)
   clean                Clean up dangling images to free space
-  permissions          Fix ownership of app volumes (CouchDB, Maintainerr, Seerr)
+  permissions          Fix ownership of app volumes (CouchDB, Maintainerr, Seerr, vLLM)
   setup                Run initial setup scripts (directories & system service)
   backup               Create verified backup of .env and app data (BACKUP=<dir>)
   upgrade              Back up, merge .env, upgrade to TARGET=<ref> (default: latest tag)
@@ -526,15 +555,27 @@ Ollama is an open-source tool for running large language models (LLMs) locally o
 5. GPU acceleration is enabled if an NVIDIA GPU is available
 6. Context length (`65536`), keep-alive (`24h`), flash attention (`1`), and KV cache type (`q8_0`) are configurable in `.env` for long-context agents like Hermes
 
+### vLLM (Opt-in GPU Inference)
+
+vLLM is an opt-in high-throughput OpenAI-compatible inference engine (`vllm/vllm-openai:v0.34.0`) under the Docker Compose `vllm` profile. It downloads Hugging Face models on demand into persistent host storage (`./apps/vllm`) and can run alongside Ollama (`:11434`) on a single NVIDIA GPU.
+
+- **Access URL (Local Loopback & Internal Compose DNS):** `http://127.0.0.1:8000/v1` from the host (`VLLM_BIND_IP=127.0.0.1` by default for security) or `http://vllm:8000/v1` from other containers such as Hermes Agent.
+- **Prerequisites & Secrets:** Requires an NVIDIA GPU with [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and driver **R580+**. Set `VLLM_API_KEY` in `.env` before starting (`vllm` fails closed if left at `CHANGE_TO_VLLM_API_KEY`); `VLLM_HF_TOKEN` is only needed for gated/private Hugging Face models and is automatically unset when left at `CHANGE_TO_HF_TOKEN`.
+- **On-Demand Model Pulls & Lifecycle:**
+  - Start vLLM with your configured `.env` model: `make up-vllm`
+  - Pull and serve any Hugging Face repo on demand: `make vllm-model MODEL=Qwen/Qwen3-8B-AWQ PARSER=hermes`
+  - Stop and remove vLLM to reclaim 100% of its GPU VRAM: `make down-vllm`
+- **Coexisting with Ollama:** `VLLM_GPU_MEMORY_UTILIZATION=0.45` and `VLLM_MAX_MODEL_LEN=32768` cap vLLM's VRAM footprint so Ollama can keep models warm concurrently. See [docs/vllm.md](docs/vllm.md) for GPU VRAM tier budgets, Hermes integration examples, backup exclusions (`./apps/vllm/huggingface` and `./apps/vllm/vllm`), and security notes.
+
 ### Hermes Agent (Beta)
 
-Hermes Agent is an opt-in autonomous AI agent (`nousresearch/hermes-agent:v0.23.3`) under the Docker Compose `beta` profile. Standard `make up`, `make restart`, `make upgrade`, and systemd boot skip `beta` services unless enabled; use `make up-beta` and `make down-beta` to run Hermes alongside Ollama, or add `COMPOSE_PROFILES=beta` to your server's `.env` (or environment) to start and keep it running automatically across `make up`, `make restart`, `make upgrade`, and host reboots.
+Hermes Agent is an opt-in autonomous AI agent (`nousresearch/hermes-agent:latest`) under the Docker Compose `beta` profile (tracking `:latest` by owner choice while Hermes is in beta). Standard `make up`, `make restart`, `make upgrade`, and systemd boot skip `beta` services unless enabled; use `make up-beta` and `make down-beta` to run Hermes alongside Ollama, or add `COMPOSE_PROFILES=beta` to your server's `.env` (or environment) to start and keep it running automatically across `make up`, `make restart`, `make upgrade`, and host reboots.
 
 - **Access URL (Web Dashboard):** `http://<your-server-ip>:9119` (works over LAN, `localhost`, and Tailscale `100.x.y.z` out of the box). `HERMES_DASHBOARD_BIND_IP` defaults to `0.0.0.0` behind Hermes's mandatory fail-closed Basic Auth login (`HERMES_DASHBOARD_BASIC_AUTH_*`); set `HERMES_DASHBOARD_BIND_IP=127.0.0.1` or your specific LAN/Tailscale IP in `.env` to restrict binding to a single interface, or set `HERMES_DASHBOARD=0` to run headless.
 - **CLI Usage:** Interact directly inside the running container with `docker exec -it hermes-agent hermes`.
-- **LLM Setup:** Uses local Ollama (`http://ollama:11434/v1` at 64K context) by default, with optional per-turn OpenRouter cloud fallback (`HERMES_OPENROUTER_API_KEY` + `fallback_providers` in `config.yaml`).
+- **LLM Providers (Local & Cloud):** Defaults to local Ollama (`http://ollama:11434/v1` at 64K context) and supports any LLM provider — local vLLM or custom OpenAI-compatible endpoints (`HERMES_OPENAI_BASE_URL` / `providers:`), OpenRouter, OpenAI, Anthropic, Google Gemini, xAI, Groq, DeepSeek, Mistral, NVIDIA NIM, Hugging Face, Ollama Cloud, and Nous Portal — configured via `.env`, `config.yaml`, the Web Dashboard **Settings / Keys** UI, or `docker exec -it hermes-agent hermes model`, with optional per-turn `fallback_providers`.
 - **Optional External Messaging Gateways:** Telegram, Discord, Slack, and other supported messaging platforms can be connected via outbound gateway tokens/config (see the [Hermes Messaging Docs](https://hermes-agent.nousresearch.com/docs/user-guide/messaging)).
-- **Setup, Persistence & Troubleshooting:** Copy [`configs/hermes/config.yaml.example`](configs/hermes/config.yaml.example) to `${DEFAULT_APPS_MOUNT}/${HERMES_FOLDER}/config.yaml`, populate `.env`, pull an Ollama model, and run `make up-beta` (or set `COMPOSE_PROFILES=beta` in your host `.env` before `make up` / `make upgrade` — keep it out of committed templates). Check status/logs/bind with `docker compose --profile beta ps hermes-agent`, `docker logs hermes-agent`, and `ss -tlnp | grep 9119`. See [docs/hermes-agent.md](docs/hermes-agent.md) for full setup, VRAM-tier model picks, gateway, and hardening details.
+- **Setup, Persistence & Troubleshooting:** Copy [`configs/hermes/config.yaml.example`](configs/hermes/config.yaml.example) to `${DEFAULT_APPS_MOUNT}/${HERMES_FOLDER}/config.yaml`, populate `.env`, pull an Ollama model (or configure a cloud/vLLM provider), and run `make up-beta` (or set `COMPOSE_PROFILES=beta` in your host `.env` before `make up` / `make upgrade` — keep it out of committed templates). Check status/logs/bind with `docker compose --profile beta ps hermes-agent`, `docker logs hermes-agent`, and `ss -tlnp | grep 9119`. See [docs/hermes-agent.md](docs/hermes-agent.md) for full setup, multi-provider guides, VRAM-tier model picks, gateway, and hardening details.
 
 ### QDirStat
 

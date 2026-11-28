@@ -172,6 +172,7 @@ if beta_flag == "true":
             "HERMES_DASHBOARD_BASIC_AUTH_USERNAME": "ciadmin",
             "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD": "cipassword123",
             "HERMES_DASHBOARD_BASIC_AUTH_SECRET": "ci-session-secret-key-for-qa-testing-32bytes",
+            "HERMES_INFERENCE_PROVIDER": "",
             "HERMES_OPENROUTER_API_KEY": "",
         }
     )
