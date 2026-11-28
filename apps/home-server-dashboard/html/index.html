@@ -72,7 +72,7 @@
       { name: "FileBrowser", port: 10000, icon: "📂", desc: "My Files" },
       { name: "CouchDB", port: 5984, icon: "🛋️", path: "/_utils", desc: "DB Admin" },
       { name: "Ollama", port: 11434, icon: "🤖", desc: "AI Models" },
-      { name: "Hermes Agent", port: 9119, icon: "🪽", desc: "AI Agent", note: "Beta" },
+      { name: "Hermes Agent", port: 9119, icon: "🪽", desc: "AI Agent", note: "Beta", tooltip: "Opt-in beta service — start with make up-beta" },
       { name: "QDirStat", port: 5800, icon: "📊", desc: "Disk Usage" },
       { name: "Samba", port: null, icon: "🗂️", desc: "Network Share", note: "Port 445" }
     ];
@@ -89,6 +89,10 @@
           card.href = url;
           card.target = "_blank";
           card.rel = "noopener noreferrer";
+      }
+
+      if (service.tooltip) {
+          card.title = service.tooltip;
       }
 
       // Base classes
