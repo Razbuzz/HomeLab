@@ -2,7 +2,7 @@
 
 Hermes Agent ([GitHub](https://github.com/NousResearch/hermes-agent) · [Official Docs](https://hermes-agent.nousresearch.com/docs/) · [Docker Hub](https://hub.docker.com/r/nousresearch/hermes-agent)) is an MIT-licensed, self-hosted autonomous AI agent running as an opt-in `beta` service in HomeLab (`nousresearch/hermes-agent:v0.23.3`).
 
-Because it uses Compose `profiles: ["beta"]`, standard `make up` ignores it completely. Use `make up-beta` and `make down-beta` when you want Hermes running alongside `ollama`.
+Because it uses Compose `profiles: ["beta"]`, standard `make up`, `make restart`, `make upgrade`, and systemd boot ignore it unless enabled. Use `make up-beta` and `make down-beta` for on-demand runs alongside `ollama`, or set `COMPOSE_PROFILES=beta` in your server's `.env` (or exported environment) to start and keep Hermes running automatically across `make up`, `make restart`, `make upgrade`, and host reboots. (Do **not** commit `COMPOSE_PROFILES=beta` to the repository `.env` template so default `make up` stays non-beta.)
 
 ## Architecture & Why This Stack
 
@@ -18,7 +18,7 @@ hermes-agent (s6-overlay PID 1 -> drops to UID/GID 1000:1000, data in /opt/data)
 
 Key design choices:
 - **64K context on Ollama**: Hermes sends ~10K–13K+ tokens of instructions, memory, and tool schemas on every turn. HomeLab configures `OLLAMA_CONTEXT_LENGTH=65536`, `OLLAMA_KEEP_ALIVE=24h`, `OLLAMA_FLASH_ATTENTION=1`, and `OLLAMA_KV_CACHE_TYPE=q8_0` directly on the `ollama` service so Ollama never silently truncates prompts to 4096 tokens and does not clamp cloud fallback context windows (avoiding `model.ollama_num_ctx` bug `#99943`).
-- **Built-in Web Dashboard (`:9119`) & CLI**: Bound strictly to `${DEFAULT_LAN_IP}:${HERMES_DASHBOARD_PORT}:9119` with mandatory fail-closed Basic Auth (`HERMES_DASHBOARD_BASIC_AUTH_*`), plus interactive/one-shot CLI access via `docker exec -it hermes-agent hermes`.
+- **Built-in Web Dashboard (`:9119`) & CLI**: Bound to `${HERMES_DASHBOARD_BIND_IP}:${HERMES_DASHBOARD_PORT}:9119` (`HERMES_DASHBOARD_BIND_IP` defaults to `0.0.0.0` so LAN, `localhost`, and Tailscale `100.x.y.z` access work out of the box) behind mandatory fail-closed Basic Auth (`HERMES_DASHBOARD_BASIC_AUTH_*`) on every non-loopback request, plus interactive/one-shot CLI access via `docker exec -it hermes-agent hermes`. Set `HERMES_DASHBOARD_BIND_IP=127.0.0.1` or your specific LAN/Tailscale IP to restrict binding to a single interface.
 - **Optional outbound messaging gateways**: No local chat server is bundled in the stack; if you want mobile or chat-based access later, Hermes supports outbound gateways (Telegram, Discord, Slack, etc.) with zero extra inbound ports.
 - **Isolated local execution**: Runs `terminal.backend: local` inside the container as UID/GID `1000:1000` without mounting `/var/run/docker.sock`.
 
@@ -55,7 +55,7 @@ The template [`configs/hermes/config.yaml.example`](../configs/hermes/config.yam
 
 ## Optional External Messaging Gateways
 
-Out of the box, HomeLab exposes Hermes through the LAN Web Dashboard (`http://<DEFAULT_LAN_IP>:9119`) and container CLI (`docker exec -it hermes-agent hermes`). If you also want to interact with Hermes from Telegram, Discord, Slack, or another supported platform:
+Out of the box, HomeLab exposes Hermes through the Web Dashboard (`http://<your-server-ip>:9119`, over LAN or Tailscale) and container CLI (`docker exec -it hermes-agent hermes`). If you also want to interact with Hermes from Telegram, Discord, Slack, or another supported platform:
 
 1. Follow the [Official Hermes Messaging Docs](https://hermes-agent.nousresearch.com/docs/user-guide/messaging) to create a bot token and find your numeric/platform user ID.
 2. Pass the platform environment variables to the `hermes-agent` service (or store non-secret gateway settings in `${DEFAULT_APPS_MOUNT}/${HERMES_FOLDER}/config.yaml` while keeping tokens in `.env`).
@@ -66,7 +66,7 @@ Out of the box, HomeLab exposes Hermes through the LAN Web Dashboard (`http://<D
 ## Security Hardening Checklist
 
 - [x] **No `docker.sock` mount**: `terminal.backend: local` runs commands strictly inside the `hermes-agent` container as UID/GID `1000:1000`. Do not add `/var/run/docker.sock` or `cap_drop: [ALL]` (s6-overlay `/init` remaps `HERMES_UID`/`HERMES_GID` and drops privileges via `s6-setuidgid`).
-- [x] **LAN-only Dashboard + Mandatory Basic Auth**: Bound to `${DEFAULT_LAN_IP}:${HERMES_DASHBOARD_PORT}:9119` (use `127.0.0.1` for SSH/Tailscale-only access). Fail-closed Basic Auth requires username, password, and a random secret (`openssl rand -base64 32`).
+- [x] **Configurable Interface Binding + Mandatory Basic Auth**: Bound via `${HERMES_DASHBOARD_BIND_IP}:${HERMES_DASHBOARD_PORT}:9119` (`0.0.0.0` by default so LAN and Tailscale `100.x.y.z` work out of the box; set `HERMES_DASHBOARD_BIND_IP=127.0.0.1` or your specific LAN/Tailscale IP to bind a single interface). Fail-closed Basic Auth requires username, password, and a random secret (`openssl rand -base64 32`) and is enforced on every non-loopback request.
 - [x] **API server disabled**: `API_SERVER_ENABLED=false` and port `8642` is not published.
 - [x] **Fail-closed gateway defaults**: `gateway.allow_all_users: false` and `unauthorized_dm_behavior: "ignore"` prevent unauthorized access if you enable an external messaging gateway.
 - [x] **Approval gates & loop guardrails**: `approvals.mode: "smart"` with `cron_mode`, `single_query_mode`, and `unattended_mode` set to `"deny"`, plus `tool_loop_guardrails.hard_stop_enabled: true`.
@@ -88,9 +88,11 @@ Out of the box, HomeLab exposes Hermes through the LAN Web Dashboard (`http://<D
    Edit `${DEFAULT_APPS_MOUNT}/${HERMES_FOLDER}/config.yaml` if you want a different `model.default` tag for your GPU VRAM tier.
 
 2. **Configure `.env`**:
-   - Set `DEFAULT_LAN_IP`, `DEFAULT_TIMEZONE`, `DEFAULT_STORAGE_MOUNT`.
+   - Set `DEFAULT_TIMEZONE`, `DEFAULT_STORAGE_MOUNT` (and `DEFAULT_LAN_IP` if used by other host references).
+   - Keep `HERMES_DASHBOARD_BIND_IP=0.0.0.0` for LAN + Tailscale (`100.x.y.z`) access, or restrict it to `127.0.0.1` or a specific LAN/Tailscale IP.
    - Set `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD` and generate `HERMES_DASHBOARD_BASIC_AUTH_SECRET` (`openssl rand -base64 32`).
    - Optionally set `HERMES_OPENROUTER_API_KEY` (or leave as placeholder if 100% local).
+   - *(Optional — keep Hermes enabled automatically)* Add `COMPOSE_PROFILES=beta` to your server's `.env` (or export `COMPOSE_PROFILES=beta` in your shell) so `make up`, `make restart`, `make upgrade`, and systemd boot (`homelab.service`) include `hermes-agent` automatically. (`merge-env.py` preserves custom `.env` keys like `COMPOSE_PROFILES` across upgrades.)
    - Restrict permissions on the host: `chmod 600 .env`.
 
 3. **Start the beta stack and pull your Ollama model**:
@@ -100,32 +102,39 @@ Out of the box, HomeLab exposes Hermes through the LAN Web Dashboard (`http://<D
    ```
 
 4. **Use Hermes via Web Dashboard or CLI (optional headless mode)**:
-   - Open `http://<DEFAULT_LAN_IP>:9119` in your browser and sign in with `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`, or run `docker exec -it hermes-agent hermes` for the CLI.
+   - Open `http://<your-server-ip>:9119` (LAN IP, Tailscale IP/MagicDNS, or `localhost`) in your browser and sign in with `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`, or run `docker exec -it hermes-agent hermes` for the CLI.
    - If you run headless (e.g., CLI or an external messaging gateway only), set `HERMES_DASHBOARD=0` in `.env` and restart (`make up-beta`). The built-in healthcheck automatically falls back to checking `/opt/data/gateway.sock`.
 
 ---
 
-## Verification Commands
+## Verification & Troubleshooting
 
 ```bash
-# Check container health and startup logs
-docker ps --filter name=hermes-agent
+# Check container health, profile status, host bind, and startup logs
+docker compose --profile beta ps hermes-agent
 docker logs --tail 50 hermes-agent
+ss -tlnp | grep 9119   # expects *:9119 (0.0.0.0) or your configured HERMES_DASHBOARD_BIND_IP:9119
 
 # Verify Hermes CLI diagnostics inside the container
 docker exec hermes-agent hermes doctor
 docker exec hermes-agent hermes gateway status
 
 # Verify fail-closed Web Dashboard auth (/api/status is public; / redirects to /login; /api/* returns 401)
-curl -fsS "http://${DEFAULT_LAN_IP}:9119/api/status"
-curl -s -o /dev/null -w '%{http_code}\n' "http://${DEFAULT_LAN_IP}:9119/"              # expects 302 (/login)
-curl -s -o /dev/null -w '%{http_code}\n' "http://${DEFAULT_LAN_IP}:9119/api/sessions"  # expects 401
+HOST_IP="${DEFAULT_LAN_IP:-127.0.0.1}"   # or your Tailscale 100.x.y.z / localhost address
+curl -fsS "http://${HOST_IP}:9119/api/status"
+curl -s -o /dev/null -w '%{http_code}\n' "http://${HOST_IP}:9119/"              # expects 302 (/login)
+curl -s -o /dev/null -w '%{http_code}\n' "http://${HOST_IP}:9119/api/sessions"  # expects 401
 curl -fsS -c /tmp/hermes-cookies.txt -X POST -H "Content-Type: application/json" \
   -d "{\"provider\":\"basic\",\"username\":\"${HERMES_DASHBOARD_BASIC_AUTH_USERNAME}\",\"password\":\"${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD}\",\"next\":\"/\"}" \
-  "http://${DEFAULT_LAN_IP}:9119/auth/password-login"
-curl -s -b /tmp/hermes-cookies.txt -o /dev/null -w '%{http_code}\n' "http://${DEFAULT_LAN_IP}:9119/"  # expects 200
+  "http://${HOST_IP}:9119/auth/password-login"
+curl -s -b /tmp/hermes-cookies.txt -o /dev/null -w '%{http_code}\n' "http://${HOST_IP}:9119/"  # expects 200
 rm -f /tmp/hermes-cookies.txt
 ```
+
+- **Connection refused on `:9119`**:
+  1. Confirm `hermes-agent` is actually running (`docker compose --profile beta ps hermes-agent`). Remember `make up` and `make restart` skip `profiles: ["beta"]` unless `make up-beta` or `COMPOSE_PROFILES=beta` is used.
+  2. Check `HERMES_DASHBOARD_BIND_IP` in `.env` and `ss -tlnp | grep 9119` — if it is bound to a single IP that does not match your Tailscale or active LAN interface, set `HERMES_DASHBOARD_BIND_IP=0.0.0.0` and run `make up-beta`.
+  3. Inspect `docker logs hermes-agent` for startup or auth configuration errors (missing `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD` / `HERMES_DASHBOARD_BASIC_AUTH_SECRET`).
 
 > **Note (`#152519`):** `hermes` CLI invocations on `v0.23.3` may print a harmless `pnpm: not installed or outdated` warning; it does not affect gateway or dashboard operation.
 
