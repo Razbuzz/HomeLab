@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.0] - 2026-11-28
+
+### Features
+
+- **hermes:** Use latest image and enable any LLM provider (#43) ([776fc07](https://github.com/Razbuzz/HomeLab/commit/776fc0708a569579ec825d86b9e515cb7a846b35))
+- **vllm:** Add opt-in vllm gpu service with on-demand hf model pulls (#42) ([950e5e8](https://github.com/Razbuzz/HomeLab/commit/950e5e8c4f11012c053d4e2e21a631b98723bc60))
+
+### CI/CD
+
+- Enforce review gate, squash-merge to develop, and branch pruning (#40) ([e25f72d](https://github.com/Razbuzz/HomeLab/commit/e25f72dce6fb11de4aa7314a338ca331a0469a65))
+
 ## [1.6.0] - 2026-11-28
 
 ### Features
