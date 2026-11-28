@@ -15,18 +15,22 @@ For every open PR targeting `develop`:
 1. Confirm the PR follows branch naming (`feat/*`, `fix/*`, `ci/*`, `docs/*`, `chore/*`) and Conventional Commits 1.0.
 2. Assign or dispatch the [`reviewer`](reviewer.md) agent in a detached worktree.
 3. If changes are requested, route findings back to the [`developer`](developer.md) agent to resolve in clean commits and re-verify.
-4. Repeat until the reviewer issues `APPROVED` and all required checks (`CI gate`) pass.
+4. Repeat until the reviewer issues a substantive `APPROVED` review on the current `HEAD` commit (`Review gate` passing) AND all CI checks (`CI gate`) pass.
 
 ## 2. Enforcing Git Flow & Merging
-- **Pre-merge checks:**
-  - PR has an `APPROVED` review with no unresolved review threads.
-  - `CI gate` (and all underlying jobs: `Lint`, `Test`, `Dashboard Smoke Test`, `Conventional Commits`) is green.
-  - Branch is cleanly rebased onto the latest `origin/develop` with no merge conflicts.
+- **Pre-merge checks (hard rule — never bypass, even for admins):**
+  - **`Review gate`** is `success`: PR has a substantive full review approval (`APPROVED`, >= 40 chars if submitted via `COMMENTED`) on the current `HEAD` commit with no unresolved review threads (`required_review_thread_resolution`). Stale approvals on prior commits do not count.
+  - **`CI gate`** is `success` (and all underlying jobs: `Lint`, `Test`, `Dashboard Smoke Test`, `System QA Test (make up-beta)`, `Conventional Commits` are green).
+  - Branch merges cleanly onto the latest `origin/develop` with no merge conflicts.
 - **Merge strategy:**
-  - Merge feature PRs into `develop` using a **merge commit (`--no-ff` / `gh pr merge --merge`)** so feature boundaries stay visible while individual commits remain clean.
+  - Merge PRs targeting `develop` using **squash merge with automatic branch pruning**:
+    ```bash
+    gh pr merge <n> -R Razbuzz/HomeLab --squash --delete-branch
+    ```
+    (enforced by GitHub ruleset `develop-squash-only` and `delete_branch_on_merge`). Verify the PR title follows Conventional Commits 1.0 since it becomes the squashed commit header.
   - Never push directly to `develop` or `main`.
   - Never force-push `develop` or `main`.
-- **Branch cleanup:** Only delete merged remote/local feature branches after confirming cleanup is desired or explicitly configured.
+- **Branch cleanup:** Merged PR head branches are automatically pruned on merge via `delete_branch_on_merge` / `--delete-branch`. Never manually delete unmerged or protected (`main`/`develop`) branches without explicit confirmation.
 
 ## 3. Cutting Releases (`develop` → `main`)
 When preparing a release `vX.Y.Z`:
@@ -35,8 +39,11 @@ When preparing a release `vX.Y.Z`:
    make changelog
    ```
    (backed by `git-cliff` / `cliff.toml`). Review the generated `CHANGELOG.md` for accuracy, migration notes, and breaking changes.
-2. Merge the changelog update into `develop` via PR if needed, then open a release PR from `develop` → `main` (title: `chore(release): vX.Y.Z` or `release: vX.Y.Z`).
-3. Wait for `CI gate` to pass on the `develop` → `main` PR, then merge to `main` with a merge commit (`--merge`).
+2. Merge the changelog update into `develop` via PR (`gh pr merge <n> --squash --delete-branch` after `Review gate` and `CI gate` pass), then open a release PR from `develop` → `main` (title: `chore(release): vX.Y.Z` or `release: vX.Y.Z`).
+3. Dispatch a full review on the `develop` → `main` release PR and wait for BOTH **`Review gate`** AND **`CI gate`** to pass (never skip full review even on release PRs!), then merge to `main` with a **merge commit** (`main-merge-commit-only`):
+   ```bash
+   gh pr merge <n> -R Razbuzz/HomeLab --merge
+   ```
 4. Create and push an **annotated** tag on `main`:
    ```bash
    git fetch origin main
@@ -48,7 +55,7 @@ When preparing a release `vX.Y.Z`:
 ## 4. Periodic Maintenance & Hygiene
 - **Image tag & security audits:** Periodically review pinned Docker image tags in `docker-compose.yml` for security patches and CVE advisories; flag any legacy `:latest` services that should be pinned during scheduled maintenance.
 - **Upstream breaking changes:** Inspect release notes before bumping major database or app versions (e.g., PostgreSQL, CouchDB, Pi-hole, Seerr). Require explicit migration notes in `README.md` and `CHANGELOG.md`.
-- **Branch protection:** Verify `develop` and `main` protection rules require pull requests, passing `CI gate` status checks, and disallow direct pushes or force-pushes.
+- **Branch protection & rulesets:** Verify `develop` and `main` require pull requests, unresolved thread resolution, and BOTH `CI gate` and `Review gate` status checks (including admins), enforce `develop-squash-only` + `main-merge-commit-only` + `delete_branch_on_merge`, and disallow direct pushes or force-pushes.
 - **Branch & worktree hygiene:** Audit stale branches and leftover worktrees; request confirmation before deleting unmerged or historical branches.
 
 ## 5. Safe Host Upgrade Coordination

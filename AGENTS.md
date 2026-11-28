@@ -50,9 +50,10 @@ Key components:
 
 ### 2. Branching & Release Model
 - Branch from `develop` using prefixes: `feat/<kebab>`, `fix/<kebab>`, `ci/<kebab>`, `docs/<kebab>`, or `chore/<kebab>`.
-- Open pull requests targeting `develop`. Before merging, rebase cleanly onto `develop` and merge with a merge commit (`--no-ff`) after `CI gate` passes.
-- Cut releases via a `develop` → `main` pull request. Once merged after `CI gate`, create and push an annotated tag `vX.Y.Z` to trigger `release.yml` and `git-cliff` changelog/release publishing.
-- Never push directly to `develop` or `main`, and never delete branches without confirmation.
+- Open pull requests targeting `develop`. Feature/fix/ci/docs/chore PRs targeting `develop` MUST be **squash-merged** (`gh pr merge <n> --squash --delete-branch`, enforced by GitHub ruleset `develop-squash-only` and `delete_branch_on_merge`), automatically pruning the merged branch.
+- **Hard rule: NO branch is ever merged without a full review (`Review gate` passing on the current `HEAD` commit) AND a full CI pipeline pass (`CI gate` passing).**
+- Cut releases via a `develop` → `main` pull request using a merge commit (`main-merge-commit-only`, `gh pr merge <n> --merge`), which ALSO requires both `Review gate` and `CI gate` before merging and creating/pushing an annotated tag `vX.Y.Z` to trigger `release.yml` and `git-cliff` changelog/release publishing.
+- Never push directly to `develop` or `main`. Merged PR head branches are automatically pruned on merge (`delete_branch_on_merge`); never manually delete unmerged or protected (`main`/`develop`) branches without confirmation.
 
 ### 3. Conventional Commits 1.0
 - Required on all non-merge commits targeting `develop` and on all PR titles:

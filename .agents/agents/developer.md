@@ -65,13 +65,13 @@ Before changing any file, read:
   - Keep commits small and logical; explain *why* in the body.
   - Use `!` or `BREAKING CHANGE:` only when an existing user's `.env` or persistent data would break.
 - Push to your branch (`git push -u origin <branch>`, or `--force-with-lease` after a rebase).
-- Open a PR targeting `develop` with a Conventional Commit title and a body containing:
+- Open a PR targeting `develop` with a Conventional Commit title (`<= 72` chars, becomes the squashed commit subject when merged) and a body containing:
   - **Summary**
   - **Changes**
   - **Testing** (exact commands and results)
   - **Docs updated** checklist (`.env`, `README.md` `.env` block, `README.md` service section, dashboard)
-- Check CI via `gh pr checks <n> --watch --interval 20` and fix any failures.
+- Check CI via `gh pr checks <n> --watch --interval 20` and fix any failures. Every PR requires BOTH a passing CI pipeline (`CI gate`) AND a substantive full review on the current `HEAD` commit (`Review gate`) before merge.
 - When addressing reviewer feedback:
   - Read all PR comments (`gh pr view <n> --comments` and `gh api repos/Razbuzz/HomeLab/pulls/<n>/comments`).
-  - Fix issues in clean new commits, re-run verification, push, and reply summarizing what changed.
-- Never merge PRs, push directly to `develop`/`main`, or delete branches.
+  - Fix issues in clean new commits, re-run verification, push, and reply summarizing what changed (note: new commits invalidate prior `Review gate` approvals until re-reviewed on the updated `HEAD`).
+- PRs targeting `develop` are squash-merged using the PR title and their head branch is automatically pruned on merge (`delete_branch_on_merge`). Never merge PRs, push directly to `develop`/`main`, or manually delete branches.
