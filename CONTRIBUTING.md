@@ -13,8 +13,12 @@ Thanks for contributing! This document outlines the branching model, commit conv
   - `docs/<kebab-case>` — documentation-only updates
   - `chore/<kebab-case>` — routine maintenance
 - Open a pull request targeting `develop`.
-- Before merging into `develop`, rebase your branch onto `origin/develop` so history stays clean and linear, then merge with a merge commit.
-- **Releases**: Create a PR from `develop` → `main` and tag the release commit on `main` as `vX.Y.Z` (e.g., `v1.3.0`).
+- **Merge strategy & automatic branch pruning:**
+  - PRs targeting `develop` are **squash-merged** (enforced by repository ruleset `develop-squash-only`), using the Conventional Commit PR title as the squashed commit subject, and the merged PR head branch is automatically deleted (`delete_branch_on_merge`).
+  - Release PRs (`develop` → `main`) use a **merge commit** (enforced by `main-merge-commit-only`) and tag the release commit on `main` as `vX.Y.Z` (e.g., `v1.3.0`).
+- **Required checks (enforced on `develop` and `main`, including admins):**
+  - Every pull request MUST pass both **`CI gate`** (full CI pipeline: `Lint`, `Test`, `Dashboard Smoke Test`, `System QA Test (make up-beta)`, `Conventional Commits`) and **`Review gate`** (a substantive full review approval on the current `HEAD` commit, evaluated by `scripts/check-review-gate.py`).
+  - No branch is ever merged without a full review and a passing CI pipeline.
 
 ## Conventional Commits
 

@@ -64,12 +64,16 @@ Run local checks in the detached review worktree:
 3. Live container smoke tests for modified services/dashboard where safe and feasible in isolation (using ephemeral containers/temp mounts, then cleaning up).
 
 ## 5. Submitting the Review
-Post a structured review via `gh pr review`:
-- **`--approve`** only when all checks pass, empirical verification succeeds, and no blockers remain.
-- **`--request-changes`** when any correctness, parity, security, or commit-convention issue exists.
+Post a structured review via `gh pr review` targeting the PR's current `HEAD` commit (stale reviews on earlier commits do not satisfy `Review gate`):
+- **`--approve`** (or `--comment` when sharing the repo owner's GitHub account) only when all checks pass, empirical verification succeeds, and no blockers remain.
+- **`--request-changes`** (or `--comment` starting with `CHANGES REQUESTED` when sharing the repo owner's account) when any correctness, parity, security, or commit-convention issue exists.
 
-Format the review body clearly:
-- **Decision:** `APPROVED` or `CHANGES REQUESTED`
-- **Summary:** Brief assessment of the PR.
-- **Findings:** Categorized as **Blocker**, **Suggestion**, or **Nit**, citing exact file paths and line numbers.
-- **Verification:** Exact commands run (`make check`, smoke tests, CI checks) and observed results.
+To satisfy/block the automated `Review gate` branch protection check cleanly even when using `--comment`, the **very first non-empty line** of the review body MUST start with `APPROVED` (or `**Verdict:** APPROVED`, with a substantive review body of at least 40 characters) or `CHANGES REQUESTED`:
+
+```markdown
+APPROVED
+
+**Summary:** Brief assessment of the PR.
+**Findings:** None (or Categorized as Blocker, Suggestion, or Nit, citing exact file paths and line numbers).
+**Verification:** Exact commands run (`make check`, smoke tests, CI checks) and observed results.
+```
