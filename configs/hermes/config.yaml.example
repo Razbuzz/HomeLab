@@ -4,26 +4,90 @@
 #   cp configs/hermes/config.yaml.example "${DEFAULT_APPS_MOUNT}/${HERMES_FOLDER}/config.yaml"
 #   chown -R "${DEFAULT_PUID}:${DEFAULT_GUID}" "${DEFAULT_APPS_MOUNT}/${HERMES_FOLDER}"
 #
-# Never store API keys or tokens directly in config.yaml; keep secrets in .env.
+# Never store API keys or tokens directly in config.yaml; keep secrets in .env
+# (or set them in the Web Dashboard Settings -> Keys page, which writes /opt/data/.env).
 
-# Primary Model — Local Ollama over Docker Compose network
-# Recommended tags by GPU VRAM tier (with OLLAMA_CONTEXT_LENGTH=65536):
+_config_version: 54
+
+# Primary Model — Defaults to local Ollama over the Docker Compose network.
+# Recommended Ollama tags by GPU VRAM tier (with OLLAMA_CONTEXT_LENGTH=65536):
 #   24 GB VRAM:    qwen3.8:27b (coding/agents), gemma4:31b (strict tool calling), or gemma4:26b (MoE speed)
 #   12-16 GB VRAM: gemma4:12b (balanced/multimodal) or qwen3.5:9b (fast/extra context headroom)
 #   8 GB VRAM:     qwen3.5:9b (tight) or gemma4:e4b / qwen3.5:4b (consider cloud primary if tool chains falter)
+#
+# To switch primary LLM provider, replace the active `model:` block with one of the
+# commented examples below (or run `docker exec -it hermes-agent hermes model`):
 model:
   default: "gemma4:12b"
   provider: "custom"
   base_url: "http://ollama:11434/v1"
   api_key: "no-key-required"
 
-# Hybrid Cloud Fallback (disabled by default so 100% local mode works with placeholder .env values).
-# To enable per-turn OpenRouter failover when local Ollama errors or times out:
-# 1. Set a real key for HERMES_OPENROUTER_API_KEY in .env
-# 2. Replace `fallback_providers: []` below with:
+# --- Alternative Provider Examples (replace `model:` above; keep secrets in .env) ---
+#
+# 1. Local vLLM (HomeLab `vllm` profile or external OpenAI-compatible server like llama.cpp / LiteLLM):
+# model:
+#   default: "homelab-vllm"           # matches VLLM_SERVED_MODEL_NAME (or e.g. "Qwen/Qwen3-32B")
+#   provider: "vllm"                  # alias for "custom"
+#   base_url: "http://vllm:8000/v1"   # or http://host.docker.internal:8000/v1
+#   key_env: "OPENAI_API_KEY"         # set HERMES_OPENAI_API_KEY=VLLM_API_KEY (or api_key: "no-key-required")
+#
+# 2. OpenRouter (set HERMES_OPENROUTER_API_KEY in .env or OPENROUTER_API_KEY in Web UI):
+# model:
+#   default: "anthropic/claude-sonnet-4-6"
+#   provider: "openrouter"
+#
+# 3. OpenAI (set HERMES_OPENAI_API_KEY in .env or OPENAI_API_KEY in Web UI):
+# model:
+#   default: "gpt-5.4"
+#   provider: "openai-api"
+#
+# 4. Anthropic (set HERMES_ANTHROPIC_API_KEY in .env or ANTHROPIC_API_KEY in Web UI):
+# model:
+#   default: "claude-sonnet-4-6"
+#   provider: "anthropic"
+#
+# 5. Google Gemini / AI Studio (set HERMES_GEMINI_API_KEY in .env or GEMINI_API_KEY in Web UI):
+# model:
+#   default: "gemini-2.5-flash"
+#   provider: "gemini"
+#
+# 6. Nous Portal (run `docker exec -it hermes-agent hermes auth add nous` for OAuth device flow):
+# model:
+#   default: "nousresearch/hermes-4-70b"
+#   provider: "nous"
+#
+# 7. DeepSeek / xAI / NVIDIA NIM / Hugging Face / Ollama Cloud (set key in .env or Web UI):
+# model:
+#   default: "deepseek-chat"          # provider: "deepseek" (HERMES_DEEPSEEK_API_KEY)
+#   provider: "deepseek"              # or "xai", "nvidia", "huggingface", "ollama-cloud"
+#
+# 8. Groq / Mistral / Any Custom OpenAI-Compatible Endpoint (host-derived <VENDOR>_API_KEY or key_env):
+# model:
+#   default: "llama-3.3-70b-versatile"
+#   provider: "custom"
+#   base_url: "https://api.groq.com/openai/v1"   # reads GROQ_API_KEY (or https://api.mistral.ai/v1 -> MISTRAL_API_KEY)
+#
+# Custom named endpoints (can also be selected by name via `model.provider` or `/model`):
+# providers:
+#   my-gateway:
+#     base_url: "https://llm.internal.example.com/v1"
+#     key_env: "MY_GATEWAY_API_KEY"
+
+# Hybrid Cloud Fallback (disabled by default so 100% local mode works immediately).
+# To enable per-turn failover when your primary provider errors, rate-limits, or times out:
+# 1. Set the provider API key in .env (e.g., HERMES_OPENROUTER_API_KEY, HERMES_OPENAI_API_KEY,
+#    HERMES_ANTHROPIC_API_KEY, HERMES_GEMINI_API_KEY) or in the Web Dashboard Keys page.
+# 2. Replace `fallback_providers: []` below with an ordered list, e.g.:
 #    fallback_providers:
 #      - provider: "openrouter"
 #        model: "deepseek/deepseek-v4.1-flash-1017"
+#      - provider: "anthropic"
+#        model: "claude-sonnet-4-6"
+#      - provider: "custom"
+#        base_url: "https://api.groq.com/openai/v1"
+#        model: "llama-3.3-70b-versatile"
+#        key_env: "GROQ_API_KEY"
 # 3. Verify with: docker exec hermes-agent hermes fallback check --live
 fallback_providers: []
 
