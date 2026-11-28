@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0] - 2026-11-28
+
+### Features
+
+- **qa:** Add comprehensive full-stack system QA test suite ([c7da1dc](https://github.com/Razbuzz/HomeLab/commit/c7da1dcea8aafb9e744c6af2016cae147bbf8367))
+
+### Bug Fixes
+
+- **hermes:** Bind dashboard to configurable interface for lan/tailscale ([0917940](https://github.com/Razbuzz/HomeLab/commit/09179405a728a1dbc9d514eba2aa36d68cbac569))
+
 ## [1.5.1] - 2026-11-27
 
 ### Bug Fixes
