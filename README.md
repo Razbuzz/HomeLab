@@ -110,6 +110,7 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     HERMES_API_TIMEOUT=1800
     HERMES_DASHBOARD=1
     HERMES_DASHBOARD_PORT=9119
+    HERMES_DASHBOARD_BIND_IP=0.0.0.0
     HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
     HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=CHANGE_TO_HERMES_DASHBOARD_PASSWORD
     HERMES_DASHBOARD_BASIC_AUTH_SECRET=CHANGE_TO_HERMES_DASHBOARD_SESSION_SECRET
@@ -143,7 +144,8 @@ Available commands:
   lint                 Run yamllint and shellcheck (and hadolint if installed)
   validate             Validate docker-compose.yml with temporary placeholders when needed
   test                 Run pytest validation suite
-  system-test          Run full-stack system test (make up + healthchecks + make down)
+  system-test          Run full-stack system test (make up-beta + QA checks + make down-beta)
+  qa                   Run full-stack System QA test (all default + beta services, web UI, auth, links)
   check                Run all local quality checks (lint, validate, test)
   changelog            Generate CHANGELOG.md using git-cliff
   release-notes        Preview unreleased release notes via git-cliff
@@ -526,13 +528,13 @@ Ollama is an open-source tool for running large language models (LLMs) locally o
 
 ### Hermes Agent (Beta)
 
-Hermes Agent is an opt-in autonomous AI agent (`nousresearch/hermes-agent:v0.23.3`) under the Docker Compose `beta` profile. Normal `make up` skips it; use `make up-beta` and `make down-beta` to run it alongside Ollama.
+Hermes Agent is an opt-in autonomous AI agent (`nousresearch/hermes-agent:v0.23.3`) under the Docker Compose `beta` profile. Standard `make up`, `make restart`, `make upgrade`, and systemd boot skip `beta` services unless enabled; use `make up-beta` and `make down-beta` to run Hermes alongside Ollama, or add `COMPOSE_PROFILES=beta` to your server's `.env` (or environment) to start and keep it running automatically across `make up`, `make restart`, `make upgrade`, and host reboots.
 
-- **Access URL (Web Dashboard):** `http://<DEFAULT_LAN_IP>:9119` (LAN-only, fail-closed Basic Auth via `HERMES_DASHBOARD_BASIC_AUTH_*`; set `HERMES_DASHBOARD=0` to run headless).
+- **Access URL (Web Dashboard):** `http://<your-server-ip>:9119` (works over LAN, `localhost`, and Tailscale `100.x.y.z` out of the box). `HERMES_DASHBOARD_BIND_IP` defaults to `0.0.0.0` behind Hermes's mandatory fail-closed Basic Auth login (`HERMES_DASHBOARD_BASIC_AUTH_*`); set `HERMES_DASHBOARD_BIND_IP=127.0.0.1` or your specific LAN/Tailscale IP in `.env` to restrict binding to a single interface, or set `HERMES_DASHBOARD=0` to run headless.
 - **CLI Usage:** Interact directly inside the running container with `docker exec -it hermes-agent hermes`.
 - **LLM Setup:** Uses local Ollama (`http://ollama:11434/v1` at 64K context) by default, with optional per-turn OpenRouter cloud fallback (`HERMES_OPENROUTER_API_KEY` + `fallback_providers` in `config.yaml`).
 - **Optional External Messaging Gateways:** Telegram, Discord, Slack, and other supported messaging platforms can be connected via outbound gateway tokens/config (see the [Hermes Messaging Docs](https://hermes-agent.nousresearch.com/docs/user-guide/messaging)).
-- **Setup & Security Guide:** Copy [`configs/hermes/config.yaml.example`](configs/hermes/config.yaml.example) to `${DEFAULT_APPS_MOUNT}/${HERMES_FOLDER}/config.yaml`, populate `.env`, pull an Ollama model, and run `make up-beta`. See [docs/hermes-agent.md](docs/hermes-agent.md) for VRAM-tier model picks, optional external messaging gateways, and hardening details.
+- **Setup, Persistence & Troubleshooting:** Copy [`configs/hermes/config.yaml.example`](configs/hermes/config.yaml.example) to `${DEFAULT_APPS_MOUNT}/${HERMES_FOLDER}/config.yaml`, populate `.env`, pull an Ollama model, and run `make up-beta` (or set `COMPOSE_PROFILES=beta` in your host `.env` before `make up` / `make upgrade` — keep it out of committed templates). Check status/logs/bind with `docker compose --profile beta ps hermes-agent`, `docker logs hermes-agent`, and `ss -tlnp | grep 9119`. See [docs/hermes-agent.md](docs/hermes-agent.md) for full setup, VRAM-tier model picks, gateway, and hardening details.
 
 ### QDirStat
 
@@ -576,7 +578,7 @@ This project is provided as-is for personal use. Please ensure you comply with a
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the branching model, Conventional Commits guidelines, environment/documentation sync rules, and how to run local quality checks (`make check`) as well as the full-stack end-to-end verification (`make system-test`, which runs automatically in the CI `System Test (make up)` stage). See [docs/BACKLOG.md](docs/BACKLOG.md) for planned features and roadmap items.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the branching model, Conventional Commits guidelines, environment/documentation sync rules, and how to run local quality checks (`make check`) as well as the full-stack System QA test (`make qa` / `make system-test`, covering all 16 services including `beta` `hermes-agent`, which runs automatically in the CI `System QA Test (make up-beta)` stage). See [docs/BACKLOG.md](docs/BACKLOG.md) for planned features and roadmap items.
 
 ## Contributing
 

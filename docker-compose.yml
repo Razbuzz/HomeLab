@@ -322,7 +322,7 @@ services:
     depends_on:
       - ollama
     ports:
-      - "${DEFAULT_LAN_IP}:${HERMES_DASHBOARD_PORT}:9119"
+      - "${HERMES_DASHBOARD_BIND_IP}:${HERMES_DASHBOARD_PORT}:9119"
     volumes:
       - ${DEFAULT_APPS_MOUNT}/${HERMES_FOLDER}:/opt/data
     environment:

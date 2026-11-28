@@ -1,4 +1,4 @@
-.PHONY: help up down up-beta down-beta restart logs pull clean setup permissions backup upgrade rollback lint validate test system-test check changelog release-notes
+.PHONY: help up down up-beta down-beta restart logs pull clean setup permissions backup upgrade rollback lint validate test system-test qa check changelog release-notes
 
 # ==========================================
 # 🛠️ COMMANDS
@@ -67,7 +67,10 @@ validate: ## Validate docker-compose.yml with temporary placeholders when needed
 test: ## Run pytest validation suite
 	python3 -m pytest -q tests
 
-system-test: ## Run full-stack system test (make up + healthchecks + make down)
+system-test: ## Run full-stack system test (make up-beta + QA checks + make down-beta)
+	bash scripts/system-test.sh
+
+qa: ## Run full-stack System QA test (all default + beta services, web UI, auth, links)
 	bash scripts/system-test.sh
 
 check: lint validate test ## Run all local quality checks (lint, validate, test)

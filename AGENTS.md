@@ -10,7 +10,7 @@ Key components:
 
 - `docker-compose.yml` — Service definitions, volume mounts, ports, GPU reservations, and restart policies.
 - `.env` — Environment configuration template with `CHANGE_TO_*` placeholders for secrets and host-specific values.
-- `Makefile` — Stack lifecycle (`up`, `down`, `restart`, `logs`, `pull`, `clean`, `setup`), safe ops (`backup`, `upgrade`, `rollback`), and quality checks (`lint`, `validate`, `test`, `system-test`, `check`), plus `changelog` when release tooling is present.
+- `Makefile` — Stack lifecycle (`up`, `down`, `restart`, `logs`, `pull`, `clean`, `setup`), safe ops (`backup`, `upgrade`, `rollback`), and quality checks (`lint`, `validate`, `test`, `system-test`, `qa`, `check`), plus `changelog` when release tooling is present.
 - `scripts/` — Host bootstrap, apt dependency installation, systemd service setup, and safe backup/upgrade/rollback scripts (`backup.sh`, `upgrade.sh`, `rollback.sh`, `merge-env.py`).
 - `docs/` — Operator guides including [`docs/upgrading.md`](docs/upgrading.md) and [`docs/hermes-agent.md`](docs/hermes-agent.md).
 - `apps/home-server-dashboard/` — Custom Nginx static dashboard (`html/index.html`) listing web services and ports.
@@ -79,7 +79,7 @@ Every change that adds, renames, or removes a service, environment variable, or 
 ### 6. Verification Before Opening a PR
 Run the local quality suite and empirical container checks before pushing or opening a PR:
 - `make check` (runs `lint`, `validate`, and `test`) — or the underlying tools directly (`yamllint`, `shellcheck`, `DEFAULT_STORAGE_MOUNT=/tmp/homelab-storage docker compose config --quiet`, `python3 -m pytest -q tests`).
-- `make system-test` — runs `scripts/system-test.sh` end-to-end (`make up` with `tests/docker-compose.ci.yml` in an isolated temp workspace, verifies all 15 default services reach `healthy` and answer on host ports, and tears down with `make down`); also enforced in CI via the `System Test (make up)` stage.
+- `make qa` / `make system-test` — runs `scripts/system-test.sh` + `scripts/qa-test.py` end-to-end (`make up-beta` with `tests/docker-compose.ci.yml` in an isolated temp workspace, verifies all 16 services reach `healthy`, checks dual-interface reachability, audits every live Dashboard card link, runs Hermes Web UI login + Compose DNS checks, runs per-service functional/security assertions, and tears down with `make down-beta`); also enforced in CI via the `System QA Test (make up-beta)` stage.
 - Empirical Docker verification (building/pulling/starting modified services and verifying HTTP/health endpoints against temporary directories, then tearing down cleanly).
 
 ## Specialized Agents
