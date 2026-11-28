@@ -21,7 +21,10 @@ from pathlib import Path
 KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 PLACEHOLDER_PREFIX = "CHANGE_TO_"
 BETA_OPTIONAL_PREFIXES = ("HERMES_",)
-BETA_ALLOW_PLACEHOLDER_KEYS = frozenset({"HERMES_OPENROUTER_API_KEY"})
+VLLM_OPTIONAL_PREFIXES = ("VLLM_",)
+OPTIONAL_PROFILE_PREFIXES = (*BETA_OPTIONAL_PREFIXES, *VLLM_OPTIONAL_PREFIXES)
+OPTIONAL_ALLOW_PLACEHOLDER_KEYS = frozenset({"HERMES_OPENROUTER_API_KEY", "VLLM_HF_TOKEN"})
+BETA_ALLOW_PLACEHOLDER_KEYS = OPTIONAL_ALLOW_PLACEHOLDER_KEYS
 
 # (old_key, new_key)
 KEY_MIGRATIONS: tuple[tuple[str, str], ...] = (
@@ -180,6 +183,7 @@ def find_unresolved_placeholders(
     template_text: str,
     active_values: dict[str, str],
     include_beta: bool,
+    include_vllm: bool = False,
 ) -> list[str]:
     """Return template keys still set to CHANGE_TO_* placeholders."""
     unresolved: list[str] = []
@@ -190,7 +194,9 @@ def find_unresolved_placeholders(
         key, _ = parsed
         if not include_beta and key.startswith(BETA_OPTIONAL_PREFIXES):
             continue
-        if key in BETA_ALLOW_PLACEHOLDER_KEYS:
+        if not include_vllm and key.startswith(VLLM_OPTIONAL_PREFIXES):
+            continue
+        if key in OPTIONAL_ALLOW_PLACEHOLDER_KEYS:
             continue
         val = active_values.get(key, "")
         cleaned = unquote_for_check(val.strip())
@@ -251,6 +257,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also enforce placeholder checks for beta profile variables (HERMES_*).",
     )
     parser.add_argument(
+        "--vllm",
+        action="store_true",
+        help="Also enforce placeholder checks for opt-in vLLM profile variables (VLLM_*).",
+    )
+    parser.add_argument(
         "--check-placeholders",
         action="store_true",
         help="Fail non-zero if any required active key still uses a CHANGE_TO_* placeholder.",
@@ -298,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{prefix}  preserved legacy/custom keys: {', '.join(legacy)}")
 
     unresolved = find_unresolved_placeholders(
-        template_text, active_values, include_beta=args.beta
+        template_text, active_values, include_beta=args.beta, include_vllm=args.vllm
     )
     if args.check_placeholders and unresolved:
         print(

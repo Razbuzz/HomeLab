@@ -715,9 +715,11 @@ def test_qa_test_parses_dashboard_services() -> None:
     services = qa_mod.parse_dashboard_services(DASHBOARD_HTML.read_text(encoding="utf-8"))
     by_name = {entry["name"]: entry for entry in services}
 
-    assert len(services) == 16, f"Expected 16 dashboard service cards, parsed {len(services)}: {list(by_name)}"
+    assert len(services) == 17, f"Expected 17 dashboard service cards, parsed {len(services)}: {list(by_name)}"
     assert by_name["Hermes Agent"]["port"] == 9119
     assert by_name["Hermes Agent"]["note"] == "Beta"
+    assert by_name["vLLM"]["port"] is None
+    assert by_name["vLLM"]["note"] == "API :8000 (Opt-in)"
     assert by_name["Pi-hole"]["port"] == 12120
     assert by_name["Pi-hole"]["path"] == "/admin"
     assert by_name["Plex"]["port"] == 32400
@@ -725,6 +727,192 @@ def test_qa_test_parses_dashboard_services() -> None:
     assert by_name["CouchDB"]["port"] == 5984
     assert by_name["CouchDB"]["path"] == "/_utils"
     assert by_name["Samba"]["port"] is None
+
+
+def test_vllm_compose_renders_cleanly_with_escaped_vars_and_healthcheck() -> None:
+    if shutil.which("docker") is None:
+        pytest.skip("docker binary not available in PATH")
+
+    check = subprocess.run(
+        ["docker", "compose", "version"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if check.returncode != 0:
+        pytest.skip(f"docker compose plugin not available: {check.stderr.strip()}")
+
+    env = os.environ.copy()
+    env["DEFAULT_STORAGE_MOUNT"] = "/tmp/homelab-storage"
+    env["DEFAULT_LAN_IP"] = "127.0.0.1"
+    result = subprocess.run(
+        ["docker", "compose", "--profile", "*", "config", "--format", "json"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    vllm = parsed["services"]["vllm"]
+
+    assert vllm["image"] == "vllm/vllm-openai:v0.34.0"
+    assert vllm["container_name"] == "vllm"
+    assert vllm["profiles"] == ["vllm"]
+    assert vllm["user"] == "1000:0"
+    assert vllm["runtime"] == "nvidia"
+    assert vllm["entrypoint"] == ["/bin/sh", "-c"]
+
+    cmd = " ".join(vllm["command"])
+    assert "$${HF_TOKEN:-}" in cmd
+    assert "$${VLLM_API_KEY:-}" in cmd
+    assert "$$VLLM_MODEL" in cmd
+    assert "$$VLLM_SERVED_MODEL_NAME" in cmd
+    assert "$$VLLM_GPU_MEMORY_UTILIZATION" in cmd
+    assert "$$VLLM_MAX_MODEL_LEN" in cmd
+    assert "$$VLLM_MAX_NUM_SEQS" in cmd
+    assert "$$VLLM_TOOL_CALL_PARSER" in cmd
+    assert "CHANGE_TO_" in cmd
+    assert "exec vllm serve" in cmd
+
+    env_cfg = vllm["environment"]
+    assert env_cfg["HOME"] == "/home/vllm"
+    assert env_cfg["HF_HOME"] == "/home/vllm/.cache/huggingface"
+    assert env_cfg["VLLM_CACHE_ROOT"] == "/home/vllm/.cache/vllm"
+    assert str(env_cfg["HF_XET_HIGH_PERFORMANCE"]) == "1"
+    assert str(env_cfg["VLLM_NO_USAGE_STATS"]) == "1"
+    assert str(env_cfg["DO_NOT_TRACK"]) == "1"
+    assert env_cfg["VLLM_MODEL"] == "Qwen/Qwen3-8B-AWQ"
+    assert env_cfg["VLLM_TOOL_CALL_PARSER"] == "hermes"
+
+    ports = vllm["ports"]
+    assert len(ports) == 1
+    assert ports[0]["host_ip"] == "127.0.0.1"
+    assert int(ports[0]["published"]) == 8000
+    assert int(ports[0]["target"]) == 8000
+
+    healthcheck = vllm["healthcheck"]
+    assert healthcheck["test"] == [
+        "CMD-SHELL",
+        "curl -sf http://127.0.0.1:8000/health >/dev/null || exit 1",
+    ]
+
+
+def test_vllm_model_script_dry_run_no_restart_and_validation(tmp_path: Path) -> None:
+    import stat
+
+    script = SCRIPTS_DIR / "vllm-model.sh"
+    assert script.is_file() and os.access(script, os.X_OK)
+
+    env_file = tmp_path / ".env"
+    original_lines = [
+        "# vllm Configuration (vllm profile)",
+        "VLLM_MODEL=Qwen/Qwen3-8B-AWQ",
+        "VLLM_TOOL_CALL_PARSER=hermes",
+        "VLLM_API_KEY=CHANGE_TO_VLLM_API_KEY",
+        "OTHER_SECRET=s3cr3t$pa&ss;with spaces!",
+        "",
+    ]
+    original_text = "\n".join(original_lines)
+    env_file.write_text(original_text, encoding="utf-8")
+    env_file.chmod(0o600)
+
+    # 1. --dry-run previews update without modifying .env
+    dry = subprocess.run(
+        [
+            "bash",
+            str(script),
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--model",
+            "Qwen/Qwen3-14B-AWQ",
+            "--parser",
+            "qwen3_coder",
+            "--dry-run",
+        ],
+        env={**os.environ, "ENV_FILE": str(env_file)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert dry.returncode == 0, dry.stderr
+    assert "[dry-run] VLLM_MODEL:   Qwen/Qwen3-8B-AWQ -> Qwen/Qwen3-14B-AWQ" in dry.stdout
+    assert "[dry-run] VLLM_TOOL_CALL_PARSER: hermes -> qwen3_coder" in dry.stdout
+    assert env_file.read_text(encoding="utf-8") == original_text
+    assert "s3cr3t$pa&ss;with spaces!" not in (dry.stdout + dry.stderr)
+
+    # 2. --no-restart atomically updates VLLM_MODEL & VLLM_TOOL_CALL_PARSER with 0600 mode
+    upd = subprocess.run(
+        [
+            "bash",
+            str(script),
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--model",
+            "NousResearch/Hermes-3-Llama-3.1-8B",
+            "--parser",
+            "llama3_json",
+            "--no-restart",
+        ],
+        env={**os.environ, "ENV_FILE": str(env_file)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert upd.returncode == 0, upd.stderr
+    updated_text = env_file.read_text(encoding="utf-8")
+    assert "VLLM_MODEL=NousResearch/Hermes-3-Llama-3.1-8B\n" in updated_text
+    assert "VLLM_TOOL_CALL_PARSER=llama3_json\n" in updated_text
+    assert "OTHER_SECRET=s3cr3t$pa&ss;with spaces!\n" in updated_text
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+    assert "s3cr3t$pa&ss;with spaces!" not in (upd.stdout + upd.stderr)
+
+    # 3. Placeholder VLLM_API_KEY fails fast when restarting
+    fail_key = subprocess.run(
+        [
+            "bash",
+            str(script),
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--model",
+            "Qwen/Qwen3-8B-AWQ",
+        ],
+        env={**os.environ, "ENV_FILE": str(env_file)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert fail_key.returncode != 0
+    assert "VLLM_API_KEY" in fail_key.stderr
+
+    # 4. Reject malformed/unsafe model identifiers without altering .env
+    snapshot = env_file.read_text(encoding="utf-8")
+    for bad_model in (
+        "qwen3-without-org",
+        "Qwen/Qwen3;rm -rf /",
+        "Qwen/Qwen3$(whoami)",
+        "../evil/model",
+        "org/repo\nEVIL=1",
+    ):
+        bad = subprocess.run(
+            [
+                "bash",
+                str(script),
+                "--repo-dir",
+                str(REPO_ROOT),
+                "--model",
+                bad_model,
+                "--no-restart",
+            ],
+            env={**os.environ, "ENV_FILE": str(env_file)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert bad.returncode != 0, f"Expected rejection for malformed model {bad_model!r}"
+        assert env_file.read_text(encoding="utf-8") == snapshot
 
 
 def _load_review_gate_module():

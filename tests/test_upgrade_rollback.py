@@ -160,6 +160,11 @@ def test_merge_env_preserves_special_chars_migrates_and_never_leaks_secrets(tmp_
                 "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=CHANGE_TO_HERMES_DASHBOARD_PASSWORD",
                 "HERMES_OPENROUTER_API_KEY=CHANGE_TO_OPENROUTER_API_KEY",
                 "",
+                "# vllm Configuration (vllm profile)",
+                "VLLM_MODEL=Qwen/Qwen3-8B-AWQ",
+                "VLLM_API_KEY=CHANGE_TO_VLLM_API_KEY",
+                "VLLM_HF_TOKEN=CHANGE_TO_HF_TOKEN",
+                "",
             ]
         ),
         encoding="utf-8",
@@ -182,7 +187,7 @@ def test_merge_env_preserves_special_chars_migrates_and_never_leaks_secrets(tmp_
         encoding="utf-8",
     )
 
-    # Without --beta, HERMES_* placeholders must NOT fail --check-placeholders
+    # Without --beta / --vllm, HERMES_* and VLLM_* placeholders must NOT fail --check-placeholders
     res = _run(
         [
             "python3",
@@ -219,7 +224,7 @@ def test_merge_env_preserves_special_chars_migrates_and_never_leaks_secrets(tmp_
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
 
     # With --beta, unresolved HERMES_DASHBOARD_BASIC_AUTH_PASSWORD fails (while optional
-    # HERMES_OPENROUTER_API_KEY placeholder is allowed) and never leaks secrets
+    # HERMES_OPENROUTER_API_KEY and VLLM_* placeholders are allowed) and never leaks secrets
     beta_fail = _run(
         [
             "python3",
@@ -238,8 +243,33 @@ def test_merge_env_preserves_special_chars_migrates_and_never_leaks_secrets(tmp_
     assert beta_fail.returncode != 0
     assert "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD" in beta_fail.stderr
     assert "HERMES_OPENROUTER_API_KEY" not in beta_fail.stderr
+    assert "VLLM_API_KEY" not in beta_fail.stderr
+    assert "VLLM_HF_TOKEN" not in beta_fail.stderr
     assert secret_pw not in (beta_fail.stdout + beta_fail.stderr)
     assert not (tmp_path / "beta_out.env").exists()
+
+    # With --vllm, unresolved VLLM_API_KEY fails (while optional VLLM_HF_TOKEN is allowed)
+    vllm_fail = _run(
+        [
+            "python3",
+            str(MERGE_ENV_SCRIPT),
+            "--template",
+            str(template),
+            "--current",
+            str(current),
+            "--output",
+            str(tmp_path / "vllm_out.env"),
+            "--check-placeholders",
+            "--vllm",
+        ],
+        check=False,
+    )
+    assert vllm_fail.returncode != 0
+    assert "VLLM_API_KEY" in vllm_fail.stderr
+    assert "VLLM_HF_TOKEN" not in vllm_fail.stderr
+    assert "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD" not in vllm_fail.stderr
+    assert secret_pw not in (vllm_fail.stdout + vllm_fail.stderr)
+    assert not (tmp_path / "vllm_out.env").exists()
 
 
 def test_merge_env_does_not_overwrite_existing_non_placeholder_seerr_keys(tmp_path: Path) -> None:
@@ -1024,6 +1054,17 @@ def test_backup_excludes_heavy_paths_and_rollback_preserves_them_with_spaces(tmp
     ollama_key = apps_dir / "ollama" / "id_ed25519"
     ollama_key.write_text("PRIVATE_KEY_DATA", encoding="utf-8")
 
+    vllm_hf_weight = apps_dir / "vllm" / "huggingface" / "hub" / "models--Qwen--Qwen3-8B-AWQ" / "model.safetensors"
+    vllm_hf_weight.parent.mkdir(parents=True, exist_ok=True)
+    vllm_hf_weight.write_bytes(b"fake-hf-safetensors-weights")
+
+    vllm_jit_cache = apps_dir / "vllm" / "vllm" / "torch_compile_cache" / "artifact.bin"
+    vllm_jit_cache.parent.mkdir(parents=True, exist_ok=True)
+    vllm_jit_cache.write_bytes(b"fake-vllm-jit-cache")
+
+    vllm_meta = apps_dir / "vllm" / "custom-note.txt"
+    vllm_meta.write_text("KEEP_VLLM_SMALL_FILE", encoding="utf-8")
+
     plex_root = apps_dir / "plex" / "config" / "Library" / "Application Support" / "Plex Media Server"
     plex_thumb = plex_root / "Media" / "thumb.bif"
     plex_thumb.parent.mkdir(parents=True, exist_ok=True)
@@ -1059,19 +1100,25 @@ def test_backup_excludes_heavy_paths_and_rollback_preserves_them_with_spaces(tmp
     archive_path = snap_dir / meta["APPS_ARCHIVE"]
     assert archive_path.is_file()
     assert "./ollama/models" in meta["APPS_EXCLUDED_PATHS"]
+    assert "./vllm/huggingface" in meta["APPS_EXCLUDED_PATHS"]
+    assert "./vllm/vllm" in meta["APPS_EXCLUDED_PATHS"]
     assert "./plex/config/Library/Application Support/Plex Media Server/Media" in meta["APPS_EXCLUDED_PATHS"]
 
     listing = _list_tar_entries(archive_path)
     assert "ollama/models" not in listing
+    assert "vllm/huggingface" not in listing
+    assert "vllm/vllm" not in listing
     assert "Plex Media Server/Media" not in listing
     assert "Plex Media Server/Cache" not in listing
     assert "Plex Media Server/Logs" not in listing
     assert "ollama/id_ed25519" in listing
+    assert "vllm/custom-note.txt" in listing
     assert "Plug-in Support/Databases/com.plexapp.plugins.library.db" in listing
 
     # Mutate backed-up config/DB & delete key while keeping heavy excluded directories intact
     plex_db.write_bytes(b"CORRUPTED_DB")
     ollama_key.unlink()
+    vllm_meta.unlink()
     (apps_dir / "post-upgrade-junk").mkdir()
 
     rb = _run(
@@ -1091,10 +1138,13 @@ def test_backup_excludes_heavy_paths_and_rollback_preserves_them_with_spaces(tmp
     # Essential configs/DBs are restored and post-upgrade junk is gone
     assert plex_db.read_bytes() == b"SQLITE_LIBRARY_DB_V1"
     assert ollama_key.read_text(encoding="utf-8") == "PRIVATE_KEY_DATA"
+    assert vllm_meta.read_text(encoding="utf-8") == "KEEP_VLLM_SMALL_FILE"
     assert not (apps_dir / "post-upgrade-junk").exists()
 
     # Excluded heavy directories (including paths with spaces) are preserved untouched in place
     assert ollama_model.read_bytes() == b"fake-gguf-weights-payload"
+    assert vllm_hf_weight.read_bytes() == b"fake-hf-safetensors-weights"
+    assert vllm_jit_cache.read_bytes() == b"fake-vllm-jit-cache"
     assert plex_thumb.read_bytes() == b"regenerable-thumbnail-bif"
     assert plex_cache.read_bytes() == b"regenerable-cache"
     assert plex_logs.read_text(encoding="utf-8") == "plex log line"
