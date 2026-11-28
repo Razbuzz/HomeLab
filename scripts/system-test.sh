@@ -1,23 +1,61 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# End-to-end system test for the default HomeLab Compose stack:
+# End-to-end System QA test for the HomeLab Compose stack:
 #   1. Backs up .env and generates a temporary CI .env in-place (with isolated storage/apps dirs).
-#   2. Exports COMPOSE_FILE=docker-compose.yml:tests/docker-compose.ci.yml for runner compatibility.
-#   3. Runs `make up` (permissions + build dashboard + pull/start all 15 default services).
-#   4. Polls Docker healthchecks until every expected service is running + healthy.
-#   5. Verifies HTTP responses on published host ports.
-#   6. Runs `make down` and restores .env cleanly in an EXIT trap.
+#   2. Pre-seeds Hermes config.yaml from configs/hermes/config.yaml.example (when beta mode is active).
+#   3. Exports COMPOSE_FILE=docker-compose.yml:tests/docker-compose.ci.yml for runner compatibility.
+#   4. Runs `make up-beta` (16 services, default) or `make up` (15 services with `--default-only`).
+#   5. Polls Docker healthchecks until every expected service is running + healthy.
+#   6. Runs scripts/qa-test.py across 127.0.0.1 and the host's non-loopback IP.
+#   7. Runs `make down-beta` (or `make down`), verifies zero leftover containers, and restores .env cleanly.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-SYSTEM_TEST_TIMEOUT="${SYSTEM_TEST_TIMEOUT:-240}"
+BETA=true
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --default-only)
+      BETA=false
+      shift
+      ;;
+    --beta)
+      BETA=true
+      shift
+      ;;
+    -h|--help)
+      echo "Usage: $(basename "$0") [--default-only]"
+      echo "  Default: full 16-service QA (15 default services + beta hermes-agent via make up-beta)."
+      echo "  --default-only: run 15 default services only (via make up)."
+      exit 0
+      ;;
+    *)
+      echo "Error: unknown option: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+SYSTEM_TEST_TIMEOUT="${SYSTEM_TEST_TIMEOUT:-300}"
 POLL_INTERVAL=5
 
 if [[ ! "${SYSTEM_TEST_TIMEOUT}" =~ ^[0-9]+$ ]] || [[ "${SYSTEM_TEST_TIMEOUT}" -le 0 ]]; then
   echo "Error: SYSTEM_TEST_TIMEOUT must be a positive integer (got '${SYSTEM_TEST_TIMEOUT}')." >&2
   exit 1
+fi
+
+HOST_IP=""
+if command -v hostname >/dev/null 2>&1; then
+  for candidate in $(hostname -I 2>/dev/null || true); do
+    if [[ "${candidate}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && [[ "${candidate}" != 127.* ]]; then
+      HOST_IP="${candidate}"
+      break
+    fi
+  done
+fi
+if [[ -z "${HOST_IP}" ]]; then
+  HOST_IP="127.0.0.1"
 fi
 
 TMP_DIR="$(mktemp -d /tmp/homelab-system-test.XXXXXX)"
@@ -43,8 +81,13 @@ cleanup() {
   export COMPOSE_FILE="docker-compose.yml:tests/docker-compose.ci.yml"
   if [[ "${STACK_STARTED}" -eq 1 ]] && [[ -f "${ENV_PATH}" ]]; then
     echo ""
-    echo "==> Cleaning up stack via make down..."
-    make -C "${REPO_ROOT}" down >/dev/null 2>&1 || true
+    if [[ "${BETA}" == true ]]; then
+      echo "==> Cleaning up stack via make down-beta..."
+      make -C "${REPO_ROOT}" down-beta >/dev/null 2>&1 || true
+    else
+      echo "==> Cleaning up stack via make down..."
+      make -C "${REPO_ROOT}" down >/dev/null 2>&1 || true
+    fi
   fi
 
   if [[ "${ENV_BACKED_UP}" == true ]]; then
@@ -86,13 +129,24 @@ if [[ -d "${REPO_ROOT}/apps/home-server-dashboard" ]]; then
   cp -a "${REPO_ROOT}/apps/home-server-dashboard" "${TMP_DIR}/apps/home-server-dashboard"
 fi
 
+# Pre-seed Hermes config.yaml from configs/hermes/config.yaml.example (matches operator flow)
+if [[ "${BETA}" == true ]]; then
+  HERMES_CFG_EXAMPLE="${REPO_ROOT}/configs/hermes/config.yaml.example"
+  if [[ ! -f "${HERMES_CFG_EXAMPLE}" ]]; then
+    echo "Error: expected ${HERMES_CFG_EXAMPLE} to exist." >&2
+    exit 1
+  fi
+  mkdir -p "${TMP_DIR}/apps/hermes"
+  cp -a "${HERMES_CFG_EXAMPLE}" "${TMP_DIR}/apps/hermes/config.yaml"
+fi
+
 # Generate temporary CI .env from backup, substituting only CI-safe overrides
 # while preserving all existing keys, ordering, and comments.
-python3 - "${ENV_BACKUP}" "${ENV_PATH}" "${TMP_DIR}/storage" "${TMP_DIR}/apps" "$(id -u)" "$(id -g)" <<'PY'
+python3 - "${ENV_BACKUP}" "${ENV_PATH}" "${TMP_DIR}/storage" "${TMP_DIR}/apps" "$(id -u)" "$(id -g)" "${HOST_IP}" "${BETA}" <<'PY'
 import sys
 from pathlib import Path
 
-src_path, dst_path, storage_dir, apps_dir, uid, gid = sys.argv[1:7]
+src_path, dst_path, storage_dir, apps_dir, uid, gid, host_ip, beta_flag = sys.argv[1:9]
 
 overrides = {
     "DEFAULT_STORAGE_MOUNT": storage_dir,
@@ -100,7 +154,7 @@ overrides = {
     "DEFAULT_PUID": uid,
     "DEFAULT_GUID": gid,
     "DEFAULT_TIMEZONE": "UTC",
-    "DEFAULT_LAN_IP": "127.0.0.1",
+    "DEFAULT_LAN_IP": host_ip,
     "DASHBOARD_PORT": "18080",
     "SAMBA_PORT": "1445",
     "SAMBA_USERNAME": "ciuser",
@@ -109,6 +163,18 @@ overrides = {
     "COUCHDB_PASSWORD": "cipassword123",
     "PI_HOLE_WEB_PASSWORD": "cipassword123",
 }
+
+if beta_flag == "true":
+    overrides.update(
+        {
+            "HERMES_DASHBOARD": "1",
+            "HERMES_DASHBOARD_BIND_IP": "0.0.0.0",
+            "HERMES_DASHBOARD_BASIC_AUTH_USERNAME": "ciadmin",
+            "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD": "cipassword123",
+            "HERMES_DASHBOARD_BASIC_AUTH_SECRET": "ci-session-secret-key-for-qa-testing-32bytes",
+            "HERMES_OPENROUTER_API_KEY": "",
+        }
+    )
 
 lines = Path(src_path).read_text(encoding="utf-8").splitlines()
 seen: set[str] = set()
@@ -134,22 +200,40 @@ PY
 unset COMPOSE_PROFILES
 export COMPOSE_FILE="docker-compose.yml:tests/docker-compose.ci.yml"
 
-echo "==> Starting default HomeLab stack via make up..."
-STACK_STARTED=1
-make -C "${REPO_ROOT}" up
+if [[ "${BETA}" == true ]]; then
+  echo "==> Starting full HomeLab stack (default + beta) via make up-beta (HOST_IP=${HOST_IP})..."
+  STACK_STARTED=1
+  make -C "${REPO_ROOT}" up-beta
+  mapfile -t EXPECTED_SERVICES < <(cd "${REPO_ROOT}" && docker compose --profile beta config --services)
+  expected_count=16
+else
+  echo "==> Starting default HomeLab stack via make up (HOST_IP=${HOST_IP})..."
+  STACK_STARTED=1
+  make -C "${REPO_ROOT}" up
+  mapfile -t EXPECTED_SERVICES < <(cd "${REPO_ROOT}" && docker compose config --services)
+  expected_count=15
+fi
 
-mapfile -t EXPECTED_SERVICES < <(cd "${REPO_ROOT}" && docker compose config --services)
 if [[ "${#EXPECTED_SERVICES[@]}" -eq 0 ]]; then
   echo "Error: no services returned by docker compose config --services" >&2
   exit 1
 fi
+if [[ "${#EXPECTED_SERVICES[@]}" -ne "${expected_count}" ]]; then
+  echo "Error: expected ${expected_count} services, got ${#EXPECTED_SERVICES[@]}: ${EXPECTED_SERVICES[*]}" >&2
+  exit 1
+fi
+
 echo "==> Waiting up to ${SYSTEM_TEST_TIMEOUT}s for ${#EXPECTED_SERVICES[@]} services to become healthy: ${EXPECTED_SERVICES[*]}"
 
 get_service_state() {
   local service="$1"
   local cid status health
 
-  cid="$(cd "${REPO_ROOT}" && docker compose ps -a -q "${service}" 2>/dev/null | head -n 1 || true)"
+  if [[ "${BETA}" == true ]]; then
+    cid="$(cd "${REPO_ROOT}" && docker compose --profile beta ps -a -q "${service}" 2>/dev/null | head -n 1 || true)"
+  else
+    cid="$(cd "${REPO_ROOT}" && docker compose ps -a -q "${service}" 2>/dev/null | head -n 1 || true)"
+  fi
   if [[ -z "${cid}" ]]; then
     printf 'missing|none|\n'
     return 0
@@ -204,7 +288,11 @@ done
 if [[ "${all_healthy}" != true ]]; then
   echo "" >&2
   echo "==> Failure Diagnostics" >&2
-  (cd "${REPO_ROOT}" && docker compose ps -a) >&2 || true
+  if [[ "${BETA}" == true ]]; then
+    (cd "${REPO_ROOT}" && docker compose --profile beta ps -a) >&2 || true
+  else
+    (cd "${REPO_ROOT}" && docker compose ps -a) >&2 || true
+  fi
   for service in "${EXPECTED_SERVICES[@]}"; do
     IFS='|' read -r status health cid <<< "$(get_service_state "${service}")"
     if [[ "${status}" != "running" || "${health}" != "healthy" ]]; then
@@ -222,106 +310,37 @@ if [[ "${all_healthy}" != true ]]; then
 fi
 
 echo ""
-echo "==> Verifying host-port HTTP endpoints..."
-
-get_env_value() {
-  local key="$1"
-  local default_val="${2:-}"
-  python3 - "${ENV_PATH}" "${key}" "${default_val}" <<'PY'
-import sys
-from pathlib import Path
-
-env_path, target_key, default_val = sys.argv[1:4]
-val = default_val
-for raw_line in Path(env_path).read_text(encoding="utf-8").splitlines():
-    line = raw_line.strip()
-    if not line or line.startswith("#") or "=" not in line:
-        continue
-    k, v = line.split("=", 1)
-    if k.strip() == target_key:
-        val = v.strip()
-print(val)
-PY
-}
-
-check_http_endpoint() {
-  local service="$1"
-  local url="$2"
-  local expected_substring="${3:-}"
-  local tmp_body="${TMP_DIR}/http-${service}.body"
-  local code=""
-
-  for _ in $(seq 1 6); do
-    code="$(curl -sS -L --max-time 10 -o "${tmp_body}" -w '%{http_code}' "${url}" || true)"
-    if [[ "${code}" =~ ^2[0-9]{2}$ ]]; then
-      if [[ -n "${expected_substring}" ]] && ! grep -Fq -- "${expected_substring}" "${tmp_body}"; then
-        echo "ERROR: ${service} (${url}) returned HTTP ${code} but body missed expected text: ${expected_substring}" >&2
-        head -c 400 "${tmp_body}" >&2 || true
-        echo "" >&2
-        return 1
-      fi
-      echo "OK: ${service} (${url}) -> HTTP ${code}"
-      return 0
-    fi
-    sleep 2
-  done
-
-  echo "ERROR: ${service} (${url}) failed host-port check (last HTTP code: ${code:-none})" >&2
-  if [[ -s "${tmp_body}" ]]; then
-    head -c 400 "${tmp_body}" >&2 || true
-    echo "" >&2
+echo "==> Running System QA Suite (scripts/qa-test.py)..."
+qa_args=(--env-file "${ENV_PATH}" --host-ip "${HOST_IP}")
+if [[ "${BETA}" == true ]]; then
+  qa_args+=(--beta)
+fi
+if ! python3 "${SCRIPT_DIR}/qa-test.py" "${qa_args[@]}"; then
+  echo "" >&2
+  echo "==> QA Suite Failure Container Diagnostics" >&2
+  if [[ "${BETA}" == true ]]; then
+    (cd "${REPO_ROOT}" && docker compose --profile beta ps -a) >&2 || true
+    docker logs --tail 60 hermes-agent >&2 || true
+  else
+    (cd "${REPO_ROOT}" && docker compose ps -a) >&2 || true
   fi
-  return 1
-}
-
-dashboard_port="$(get_env_value DASHBOARD_PORT 18080)"
-qbittorrent_port="$(get_env_value QBITTORRENT_UI_PORT 8080)"
-filebrowser_port="$(get_env_value FILEBROWSER_UI_PORT 10000)"
-sonarr_port="$(get_env_value SONARR_PORT 8989)"
-radarr_port="$(get_env_value RADARR_PORT 7878)"
-jackett_port="$(get_env_value JACKETT_PORT 9117)"
-maintainerr_port="$(get_env_value MAINTAINERR_PORT 6246)"
-couchdb_port="$(get_env_value COUCHDB_PORT 5984)"
-pihole_port="$(get_env_value PI_HOLE_UI_PORT 12120)"
-seerr_port="$(get_env_value SEERR_PORT 5055)"
-flaresolverr_port="$(get_env_value FLARESOLVERR_PORT 8191)"
-ollama_port="$(get_env_value OLLAMA_PORT 11434)"
-qdirstat_port="$(get_env_value QDirstat_PORT 5800)"
-samba_port="$(get_env_value SAMBA_PORT 1445)"
-
-check_http_endpoint "dashboard" "http://127.0.0.1:${dashboard_port}/" "Home Server Dashboard"
-check_http_endpoint "plex" "http://127.0.0.1:32400/identity"
-check_http_endpoint "qbittorrent" "http://127.0.0.1:${qbittorrent_port}/"
-check_http_endpoint "filebrowser" "http://127.0.0.1:${filebrowser_port}/health"
-check_http_endpoint "sonarr" "http://127.0.0.1:${sonarr_port}/ping"
-check_http_endpoint "radarr" "http://127.0.0.1:${radarr_port}/ping"
-check_http_endpoint "jackett" "http://127.0.0.1:${jackett_port}/health"
-check_http_endpoint "maintainerr" "http://127.0.0.1:${maintainerr_port}/api/health/ready"
-check_http_endpoint "couchdb" "http://127.0.0.1:${couchdb_port}/_up" '"status":"ok"'
-check_http_endpoint "pihole" "http://127.0.0.1:${pihole_port}/api/info/login"
-check_http_endpoint "seerr" "http://127.0.0.1:${seerr_port}/api/v1/settings/public"
-check_http_endpoint "flaresolverr" "http://127.0.0.1:${flaresolverr_port}/health"
-check_http_endpoint "ollama" "http://127.0.0.1:${ollama_port}/api/version"
-check_http_endpoint "qdirstat" "http://127.0.0.1:${qdirstat_port}/site.webmanifest"
-
-python3 - "${samba_port}" <<'PY'
-import socket
-import sys
-
-port = int(sys.argv[1])
-with socket.create_connection(("127.0.0.1", port), timeout=5):
-    print(f"OK: samba (127.0.0.1:{port}) -> TCP reachable")
-PY
-
-echo ""
-echo "==> Tearing down stack via make down..."
-make -C "${REPO_ROOT}" down
-STACK_STARTED=0
-
-remaining="$(cd "${REPO_ROOT}" && docker compose ps -a -q)"
-if [[ -n "${remaining}" ]]; then
-  echo "ERROR: expected docker compose ps -a -q to be empty after make down, found: ${remaining}" >&2
   exit 1
 fi
 
-echo "==> System test passed: all ${#EXPECTED_SERVICES[@]} default services reached healthy, passed host-port checks, and tore down cleanly."
+echo ""
+if [[ "${BETA}" == true ]]; then
+  echo "==> Tearing down stack via make down-beta..."
+  make -C "${REPO_ROOT}" down-beta
+else
+  echo "==> Tearing down stack via make down..."
+  make -C "${REPO_ROOT}" down
+fi
+STACK_STARTED=0
+
+remaining="$(cd "${REPO_ROOT}" && docker compose --profile '*' ps -a -q)"
+if [[ -n "${remaining}" ]]; then
+  echo "ERROR: expected docker compose --profile '*' ps -a -q to be empty after teardown, found: ${remaining}" >&2
+  exit 1
+fi
+
+echo "==> System QA test passed: all ${#EXPECTED_SERVICES[@]} services reached healthy, passed full-stack QA checks, and tore down cleanly."

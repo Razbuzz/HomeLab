@@ -122,12 +122,12 @@ jobs:
           echo "Dashboard smoke test passed"
 
   system-test:
-    name: System Test (make up)
+    name: System QA Test (make up-beta)
     needs:
       - lint
       - test
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -135,10 +135,16 @@ jobs:
       - name: Free runner disk space for full stack images
         run: |
           df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost \
+            /opt/hostedtoolcache/go
           df -h /
 
-      - name: Run full-stack system test
+      - name: Run full-stack System QA test
         run: make system-test
 
   conventional-commits:

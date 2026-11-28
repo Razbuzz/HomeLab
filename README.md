@@ -144,7 +144,8 @@ Available commands:
   lint                 Run yamllint and shellcheck (and hadolint if installed)
   validate             Validate docker-compose.yml with temporary placeholders when needed
   test                 Run pytest validation suite
-  system-test          Run full-stack system test (make up + healthchecks + make down)
+  system-test          Run full-stack system test (make up-beta + QA checks + make down-beta)
+  qa                   Run full-stack System QA test (all default + beta services, web UI, auth, links)
   check                Run all local quality checks (lint, validate, test)
   changelog            Generate CHANGELOG.md using git-cliff
   release-notes        Preview unreleased release notes via git-cliff
@@ -577,7 +578,7 @@ This project is provided as-is for personal use. Please ensure you comply with a
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the branching model, Conventional Commits guidelines, environment/documentation sync rules, and how to run local quality checks (`make check`) as well as the full-stack end-to-end verification (`make system-test`, which runs automatically in the CI `System Test (make up)` stage). See [docs/BACKLOG.md](docs/BACKLOG.md) for planned features and roadmap items.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the branching model, Conventional Commits guidelines, environment/documentation sync rules, and how to run local quality checks (`make check`) as well as the full-stack System QA test (`make qa` / `make system-test`, covering all 16 services including `beta` `hermes-agent`, which runs automatically in the CI `System QA Test (make up-beta)` stage). See [docs/BACKLOG.md](docs/BACKLOG.md) for planned features and roadmap items.
 
 ## Contributing
 

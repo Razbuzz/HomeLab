@@ -377,7 +377,11 @@ def test_env_keys_are_used_across_repo() -> None:
         COMPOSE_FILE,
         MAKEFILE,
         DASHBOARD_HTML,
-        *sorted(p for p in SCRIPTS_DIR.rglob("*") if p.is_file()),
+        *sorted(
+            p
+            for p in SCRIPTS_DIR.rglob("*")
+            if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"
+        ),
     ]
     corpus = "\n".join(p.read_text(encoding="utf-8") for p in searchable_files if p.exists())
 
@@ -686,3 +690,38 @@ def test_shell_scripts_use_bash_shebang_and_set_e() -> None:
             issues.append(f"{rel}: missing `set -e` (or `set -euo pipefail`)")
 
     assert not issues, "Shell script safety check failed:\n" + "\n".join(issues)
+
+
+def test_qa_test_parses_dashboard_services() -> None:
+    import importlib.util
+    import sys
+
+    qa_script = SCRIPTS_DIR / "qa-test.py"
+    assert qa_script.is_file(), "scripts/qa-test.py must exist"
+    assert os.access(qa_script, os.X_OK), "scripts/qa-test.py must be executable"
+
+    spec = importlib.util.spec_from_file_location("qa_test", qa_script)
+    assert spec is not None and spec.loader is not None
+    qa_mod = importlib.util.module_from_spec(spec)
+    prev_dont_write = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    sys.modules["qa_test"] = qa_mod
+    try:
+        spec.loader.exec_module(qa_mod)
+    finally:
+        sys.modules.pop("qa_test", None)
+        sys.dont_write_bytecode = prev_dont_write
+
+    services = qa_mod.parse_dashboard_services(DASHBOARD_HTML.read_text(encoding="utf-8"))
+    by_name = {entry["name"]: entry for entry in services}
+
+    assert len(services) == 16, f"Expected 16 dashboard service cards, parsed {len(services)}: {list(by_name)}"
+    assert by_name["Hermes Agent"]["port"] == 9119
+    assert by_name["Hermes Agent"]["note"] == "Beta"
+    assert by_name["Pi-hole"]["port"] == 12120
+    assert by_name["Pi-hole"]["path"] == "/admin"
+    assert by_name["Plex"]["port"] == 32400
+    assert by_name["Plex"]["path"] == "/web"
+    assert by_name["CouchDB"]["port"] == 5984
+    assert by_name["CouchDB"]["path"] == "/_utils"
+    assert by_name["Samba"]["port"] is None
