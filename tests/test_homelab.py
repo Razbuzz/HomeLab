@@ -725,3 +725,318 @@ def test_qa_test_parses_dashboard_services() -> None:
     assert by_name["CouchDB"]["port"] == 5984
     assert by_name["CouchDB"]["path"] == "/_utils"
     assert by_name["Samba"]["port"] is None
+
+
+def _load_review_gate_module():
+    import importlib.util
+    import sys
+
+    script = SCRIPTS_DIR / "check-review-gate.py"
+    assert script.is_file(), "scripts/check-review-gate.py must exist"
+    assert os.access(script, os.X_OK), "scripts/check-review-gate.py must be executable"
+
+    spec = importlib.util.spec_from_file_location("check_review_gate", script)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    prev_dont_write = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    sys.modules["check_review_gate"] = mod
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.modules.pop("check_review_gate", None)
+        sys.dont_write_bytecode = prev_dont_write
+    return mod
+
+
+def test_review_gate_evaluation_rules() -> None:
+    mod = _load_review_gate_module()
+    evaluate = mod.evaluate_reviews
+    head_sha = "abcdef1234567890abcdef1234567890abcdef12"
+    old_sha = "1111111222222233333334444444555555566666"
+    substantive_approval = (
+        "APPROVED\n\nVerified make check, CI workflows, and security settings cleanly."
+    )
+
+    # 1. No reviews -> blocked
+    approved, msg = evaluate([], head_sha)
+    assert approved is False
+    assert "Awaiting full review approval" in msg
+    assert head_sha[:7] in msg
+
+    # 2. Stale APPROVED on an older commit_id -> ignored / blocked
+    approved, msg = evaluate(
+        [
+            {
+                "id": 1,
+                "commit_id": old_sha,
+                "state": "APPROVED",
+                "body": substantive_approval,
+                "submitted_at": "2026-11-28T10:00:00Z",
+            }
+        ],
+        head_sha,
+    )
+    assert approved is False
+    assert "Awaiting full review approval" in msg
+
+    # 3. Native CHANGES_REQUESTED -> blocked
+    approved, msg = evaluate(
+        [
+            {
+                "id": 2,
+                "commit_id": head_sha,
+                "state": "CHANGES_REQUESTED",
+                "body": "Please fix parity issue.",
+                "submitted_at": "2026-11-28T10:05:00Z",
+            }
+        ],
+        head_sha,
+    )
+    assert approved is False
+    assert "Changes requested" in msg
+
+    # 4. COMMENTED "CHANGES REQUESTED" -> blocked (including markdown wrapper)
+    approved, msg = evaluate(
+        [
+            {
+                "id": 3,
+                "commit_id": head_sha,
+                "state": "COMMENTED",
+                "body": "**CHANGES REQUESTED**\n\nMissing healthcheck on new service.",
+                "submitted_at": "2026-11-28T10:06:00Z",
+            }
+        ],
+        head_sha,
+    )
+    assert approved is False
+    assert "Changes requested" in msg
+
+    # 5. APPROVED followed chronologically by CHANGES REQUESTED on same head_sha -> blocked
+    approved, msg = evaluate(
+        [
+            {
+                "id": 10,
+                "commit_id": head_sha,
+                "state": "COMMENTED",
+                "body": "**CHANGES REQUESTED**\n\nFound a regression in workflow permissions.",
+                "submitted_at": "2026-11-28T10:20:00Z",
+            },
+            {
+                "id": 9,
+                "commit_id": head_sha,
+                "state": "APPROVED",
+                "body": substantive_approval,
+                "submitted_at": "2026-11-28T10:10:00Z",
+            },
+        ],
+        head_sha,
+    )
+    assert approved is False
+    assert "Changes requested" in msg
+
+    # 6. CHANGES REQUESTED followed chronologically by substantive APPROVED on same head_sha -> approved
+    approved, msg = evaluate(
+        [
+            {
+                "id": 11,
+                "commit_id": head_sha,
+                "state": "CHANGES_REQUESTED",
+                "body": "Please add unit tests.",
+                "submitted_at": "2026-11-28T10:10:00Z",
+            },
+            {
+                "id": 12,
+                "commit_id": head_sha,
+                "state": "COMMENTED",
+                "body": substantive_approval,
+                "submitted_at": "2026-11-28T10:25:00Z",
+            },
+        ],
+        head_sha,
+    )
+    assert approved is True
+    assert "Full review approved" in msg
+
+    # 7. Trivial short COMMENTED "APPROVED" (< 40 chars) -> blocked
+    approved, msg = evaluate(
+        [
+            {
+                "id": 13,
+                "commit_id": head_sha,
+                "state": "COMMENTED",
+                "body": "APPROVED",
+                "submitted_at": "2026-11-28T10:30:00Z",
+            }
+        ],
+        head_sha,
+    )
+    assert approved is False
+    assert "too brief" in msg.lower()
+
+    # 8. Substantive COMMENTED review starting with APPROVED / **Verdict:** APPROVED -> approved
+    for verdict_line in (
+        "APPROVED",
+        "**Verdict:** APPROVED",
+        "### Verdict: APPROVED",
+    ):
+        body = f"{verdict_line}\n\nReviewed diff, parity, and full test output."
+        assert len(body.strip()) >= 40
+        approved, msg = evaluate(
+            [
+                {
+                    "id": 14,
+                    "commit_id": head_sha,
+                    "state": "COMMENTED",
+                    "body": body,
+                    "submitted_at": "2026-11-28T10:35:00Z",
+                }
+            ],
+            head_sha,
+        )
+        assert approved is True, f"Expected approval for {verdict_line!r}, got {msg}"
+
+    # 8b. **Verdict:** CHANGES_REQUESTED wrapper -> blocked
+    approved, msg = evaluate(
+        [
+            {
+                "id": 141,
+                "commit_id": head_sha,
+                "state": "COMMENTED",
+                "body": "**Verdict:** CHANGES_REQUESTED\n\nPlease fix port collision in compose.",
+                "submitted_at": "2026-11-28T10:36:00Z",
+            }
+        ],
+        head_sha,
+    )
+    assert approved is False
+    assert "Changes requested" in msg
+
+    # 9. Native GitHub APPROVED on head_sha -> approved
+    approved, msg = evaluate(
+        [
+            {
+                "id": 15,
+                "commit_id": head_sha,
+                "state": "APPROVED",
+                "body": "",
+                "submitted_at": "2026-11-28T10:40:00Z",
+            }
+        ],
+        head_sha,
+    )
+    assert approved is True
+    assert "Full review approved" in msg
+
+    # 10. DISMISSED and PENDING reviews ignored -> blocked
+    approved, msg = evaluate(
+        [
+            {
+                "id": 16,
+                "commit_id": head_sha,
+                "state": "DISMISSED",
+                "body": substantive_approval,
+                "submitted_at": "2026-11-28T10:45:00Z",
+            },
+            {
+                "id": 17,
+                "commit_id": head_sha,
+                "state": "PENDING",
+                "body": substantive_approval,
+                "submitted_at": "2026-11-28T10:46:00Z",
+            },
+        ],
+        head_sha,
+    )
+    assert approved is False
+    assert "Awaiting full review approval" in msg
+
+    # 11. Neutral discussion comment after APPROVED preserves approval
+    approved, msg = evaluate(
+        [
+            {
+                "id": 18,
+                "commit_id": head_sha,
+                "state": "COMMENTED",
+                "body": substantive_approval,
+                "submitted_at": "2026-11-28T10:50:00Z",
+            },
+            {
+                "id": 19,
+                "commit_id": head_sha,
+                "state": "COMMENTED",
+                "body": "Thanks for adding the extra test coverage!",
+                "submitted_at": "2026-11-28T10:55:00Z",
+            },
+        ],
+        head_sha,
+    )
+    assert approved is True
+    assert "Full review approved" in msg
+
+
+def test_review_gate_cli_reviews_json(tmp_path: Path) -> None:
+    head_sha = "fedcba9876543210fedcba9876543210fedcba98"
+    reviews_path = tmp_path / "reviews.json"
+    reviews_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": 1,
+                    "commit_id": head_sha,
+                    "state": "COMMENTED",
+                    "body": "**Verdict:** APPROVED\n\nAll checks and security assertions verified.",
+                    "submitted_at": "2026-11-28T11:00:00Z",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [
+            "python3",
+            str(SCRIPTS_DIR / "check-review-gate.py"),
+            "--head-sha",
+            head_sha,
+            "--reviews-json",
+            str(reviews_path),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "Review gate [success]" in proc.stdout
+
+    brief_path = tmp_path / "brief.json"
+    brief_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": 2,
+                    "commit_id": head_sha,
+                    "state": "COMMENTED",
+                    "body": "APPROVED",
+                    "submitted_at": "2026-11-28T11:05:00Z",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    brief_proc = subprocess.run(
+        [
+            "python3",
+            str(SCRIPTS_DIR / "check-review-gate.py"),
+            "--head-sha",
+            head_sha,
+            "--reviews-json",
+            str(brief_path),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert brief_proc.returncode == 1
+    assert "Review gate [failure]" in brief_proc.stdout
