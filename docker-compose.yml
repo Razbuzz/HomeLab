@@ -372,7 +372,7 @@ services:
     restart: unless-stopped
 
   hermes-agent:
-    image: nousresearch/hermes-agent:v0.23.3
+    image: nousresearch/hermes-agent:latest
     container_name: hermes-agent
     profiles:
       - beta
@@ -396,7 +396,19 @@ services:
       - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD}
       - HERMES_DASHBOARD_BASIC_AUTH_SECRET=${HERMES_DASHBOARD_BASIC_AUTH_SECRET}
       - API_SERVER_ENABLED=false
-      - OPENROUTER_API_KEY=${HERMES_OPENROUTER_API_KEY}
+      - HERMES_INFERENCE_PROVIDER=${HERMES_INFERENCE_PROVIDER:-}
+      - OPENROUTER_API_KEY=${HERMES_OPENROUTER_API_KEY:-}
+      - OPENAI_API_KEY=${HERMES_OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${HERMES_OPENAI_BASE_URL:-}
+      - ANTHROPIC_API_KEY=${HERMES_ANTHROPIC_API_KEY:-}
+      - GEMINI_API_KEY=${HERMES_GEMINI_API_KEY:-}
+      - XAI_API_KEY=${HERMES_XAI_API_KEY:-}
+      - GROQ_API_KEY=${HERMES_GROQ_API_KEY:-}
+      - DEEPSEEK_API_KEY=${HERMES_DEEPSEEK_API_KEY:-}
+      - MISTRAL_API_KEY=${HERMES_MISTRAL_API_KEY:-}
+      - NVIDIA_API_KEY=${HERMES_NVIDIA_API_KEY:-}
+      - HF_TOKEN=${HERMES_HF_TOKEN:-}
+      - OLLAMA_API_KEY=${HERMES_OLLAMA_API_KEY:-}
     shm_size: "1g"
     mem_limit: 4g
     pids_limit: 512
