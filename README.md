@@ -101,6 +101,19 @@ This repository contains infrastructure-as-code (Docker Compose) for a robust, a
     OLLAMA_FLASH_ATTENTION=1
     OLLAMA_KV_CACHE_TYPE=q8_0
 
+    # vllm Configuration (vllm profile)
+    VLLM_FOLDER=vllm
+    VLLM_BIND_IP=127.0.0.1
+    VLLM_PORT=8000
+    VLLM_MODEL=Qwen/Qwen3-8B-AWQ
+    VLLM_SERVED_MODEL_NAME=homelab-vllm
+    VLLM_GPU_MEMORY_UTILIZATION=0.45
+    VLLM_MAX_MODEL_LEN=32768
+    VLLM_MAX_NUM_SEQS=8
+    VLLM_TOOL_CALL_PARSER=hermes
+    VLLM_API_KEY=CHANGE_TO_VLLM_API_KEY
+    VLLM_HF_TOKEN=CHANGE_TO_HF_TOKEN
+
     # qdirstat Configuration
     QDirstat_FOLDER=qdirstat
     QDirstat_PORT=5800
@@ -132,11 +145,14 @@ Available commands:
   down                 Stop the stack and remove containers
   up-beta              Start the stack including beta services (e.g. Hermes Agent)
   down-beta            Stop the stack including beta services
+  up-vllm              Start opt-in vLLM GPU inference service
+  down-vllm            Stop and remove vLLM service (frees GPU VRAM)
+  vllm-model           Pull & serve a Hugging Face model on vLLM (MODEL=org/repo [PARSER=...])
   restart              Restart the stack (runs down then up)
   logs                 View logs for all services (Ctrl+C to exit)
   pull                 Just pull images (useful for pre-loading updates)
   clean                Clean up dangling images to free space
-  permissions          Fix ownership of app volumes (CouchDB, Maintainerr, Seerr)
+  permissions          Fix ownership of app volumes (CouchDB, Maintainerr, Seerr, vLLM)
   setup                Run initial setup scripts (directories & system service)
   backup               Create verified backup of .env and app data (BACKUP=<dir>)
   upgrade              Back up, merge .env, upgrade to TARGET=<ref> (default: latest tag)
@@ -525,6 +541,18 @@ Ollama is an open-source tool for running large language models (LLMs) locally o
 4. Models are stored in the `./apps/ollama` directory for persistence
 5. GPU acceleration is enabled if an NVIDIA GPU is available
 6. Context length (`65536`), keep-alive (`24h`), flash attention (`1`), and KV cache type (`q8_0`) are configurable in `.env` for long-context agents like Hermes
+
+### vLLM (Opt-in GPU Inference)
+
+vLLM is an opt-in high-throughput OpenAI-compatible inference engine (`vllm/vllm-openai:v0.34.0`) under the Docker Compose `vllm` profile. It downloads Hugging Face models on demand into persistent host storage (`./apps/vllm`) and can run alongside Ollama (`:11434`) on a single NVIDIA GPU.
+
+- **Access URL (Local Loopback & Internal Compose DNS):** `http://127.0.0.1:8000/v1` from the host (`VLLM_BIND_IP=127.0.0.1` by default for security) or `http://vllm:8000/v1` from other containers such as Hermes Agent.
+- **Prerequisites & Secrets:** Requires an NVIDIA GPU with [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and driver **R580+**. Set `VLLM_API_KEY` in `.env` before starting (`vllm` fails closed if left at `CHANGE_TO_VLLM_API_KEY`); `VLLM_HF_TOKEN` is only needed for gated/private Hugging Face models and is automatically unset when left at `CHANGE_TO_HF_TOKEN`.
+- **On-Demand Model Pulls & Lifecycle:**
+  - Start vLLM with your configured `.env` model: `make up-vllm`
+  - Pull and serve any Hugging Face repo on demand: `make vllm-model MODEL=Qwen/Qwen3-8B-AWQ PARSER=hermes`
+  - Stop and remove vLLM to reclaim 100% of its GPU VRAM: `make down-vllm`
+- **Coexisting with Ollama:** `VLLM_GPU_MEMORY_UTILIZATION=0.45` and `VLLM_MAX_MODEL_LEN=32768` cap vLLM's VRAM footprint so Ollama can keep models warm concurrently. See [docs/vllm.md](docs/vllm.md) for GPU VRAM tier budgets, Hermes integration examples, backup exclusions (`./apps/vllm/huggingface` and `./apps/vllm/vllm`), and security notes.
 
 ### Hermes Agent (Beta)
 
